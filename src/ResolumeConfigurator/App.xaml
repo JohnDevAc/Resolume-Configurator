@@ -1,0 +1,62 @@
+<Application x:Class="ResolumeConfigurator.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Application.Resources>
+    <Color x:Key="Ink">#EFF6F7</Color>
+    <Color x:Key="Muted">#91A3A7</Color>
+    <Color x:Key="Panel">#142125</Color>
+    <Color x:Key="Panel2">#192A2F</Color>
+    <Color x:Key="Accent">#54E0B6</Color>
+    <Color x:Key="AccentDeep">#169D80</Color>
+    <LinearGradientBrush x:Key="AppBackground" StartPoint="0,0" EndPoint="1,1">
+      <GradientStop Color="#071114" Offset="0"/><GradientStop Color="#0B171B" Offset="0.58"/><GradientStop Color="#071316" Offset="1"/>
+    </LinearGradientBrush>
+    <SolidColorBrush x:Key="InkBrush" Color="{StaticResource Ink}" />
+    <SolidColorBrush x:Key="MutedBrush" Color="{StaticResource Muted}" />
+    <SolidColorBrush x:Key="PanelBrush" Color="{StaticResource Panel}" />
+    <SolidColorBrush x:Key="Panel2Brush" Color="{StaticResource Panel2}" />
+    <SolidColorBrush x:Key="AccentBrush" Color="{StaticResource Accent}" />
+    <Style TargetType="TextBlock"><Setter Property="Foreground" Value="{StaticResource InkBrush}" /></Style>
+    <Style TargetType="Button">
+      <Setter Property="Foreground" Value="#07120F"/><Setter Property="Background" Value="{StaticResource AccentBrush}"/>
+      <Setter Property="BorderThickness" Value="0"/><Setter Property="Padding" Value="18,10"/><Setter Property="FontWeight" Value="SemiBold"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="ButtonSurface" Background="{TemplateBinding Background}" CornerRadius="7" Padding="{TemplateBinding Padding}" RenderTransformOrigin="0.5,0.5">
+              <Border.RenderTransform><ScaleTransform ScaleX="1" ScaleY="1"/></Border.RenderTransform>
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="ButtonSurface" Property="Opacity" Value="0.9"/></Trigger>
+              <Trigger Property="IsPressed" Value="True"><Setter TargetName="ButtonSurface" Property="RenderTransform"><Setter.Value><ScaleTransform ScaleX="0.98" ScaleY="0.98"/></Setter.Value></Setter></Trigger>
+              <Trigger Property="IsEnabled" Value="False"><Setter TargetName="ButtonSurface" Property="Opacity" Value="0.35"/><Setter Property="Cursor" Value="Arrow"/></Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key="SecondaryButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+      <Setter Property="Foreground" Value="{StaticResource InkBrush}"/><Setter Property="Background" Value="#294047"/>
+    </Style>
+    <Style TargetType="TextBox">
+      <Setter Property="Foreground" Value="{StaticResource InkBrush}"/><Setter Property="Background" Value="#0D171A"/><Setter Property="BorderBrush" Value="#355159"/>
+      <Setter Property="Padding" Value="9,7"/><Setter Property="CaretBrush" Value="{StaticResource AccentBrush}"/>
+      <Style.Triggers><Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter Property="BorderBrush" Value="{StaticResource AccentBrush}"/><Setter Property="BorderThickness" Value="1.5"/></Trigger></Style.Triggers>
+    </Style>
+    <Style TargetType="DataGrid">
+      <Setter Property="Foreground" Value="{StaticResource InkBrush}"/><Setter Property="Background" Value="Transparent"/><Setter Property="BorderThickness" Value="0"/>
+      <Setter Property="RowBackground" Value="#122025"/><Setter Property="AlternatingRowBackground" Value="#17282D"/><Setter Property="HorizontalGridLinesBrush" Value="#263A40"/>
+      <Setter Property="VerticalGridLinesBrush" Value="#263A40"/><Setter Property="HeadersVisibility" Value="Column"/><Setter Property="RowHeaderWidth" Value="0"/>
+      <Setter Property="CanUserAddRows" Value="False"/><Setter Property="CanUserDeleteRows" Value="False"/><Setter Property="AutoGenerateColumns" Value="False"/>
+    </Style>
+    <Style TargetType="DataGridColumnHeader">
+      <Setter Property="Background" Value="#22363C"/><Setter Property="Foreground" Value="#B8C8CB"/><Setter Property="Padding" Value="9,8"/><Setter Property="BorderThickness" Value="0,0,1,1"/><Setter Property="BorderBrush" Value="#314A51"/>
+    </Style>
+    <Style TargetType="DataGridCell">
+      <Setter Property="Padding" Value="8,6"/><Setter Property="BorderThickness" Value="0,0,1,1"/><Setter Property="BorderBrush" Value="#263A40"/>
+      <Style.Triggers><Trigger Property="IsSelected" Value="True"><Setter Property="Background" Value="#24534D"/><Setter Property="Foreground" Value="#F4FFFC"/></Trigger></Style.Triggers>
+    </Style>
+  </Application.Resources>
+</Application>

@@ -1,0 +1,108 @@
+<Window x:Class="ResolumeConfigurator.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Resolume Arena Configurator" Height="960" Width="1500" MinHeight="720" MinWidth="1080"
+        Background="{StaticResource AppBackground}" Icon="Assets/app-icon.png" WindowStartupLocation="CenterScreen">
+  <Window.Resources>
+    <Style x:Key="Card" TargetType="Border">
+      <Setter Property="Background" Value="{StaticResource PanelBrush}"/><Setter Property="CornerRadius" Value="12"/>
+      <Setter Property="Padding" Value="20"/><Setter Property="BorderBrush" Value="#22383E"/><Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="Effect"><Setter.Value><DropShadowEffect BlurRadius="18" ShadowDepth="5" Opacity="0.18" Color="#000000"/></Setter.Value></Setter>
+    </Style>
+    <Style x:Key="Label" TargetType="TextBlock">
+      <Setter Property="Foreground" Value="{StaticResource MutedBrush}"/><Setter Property="FontSize" Value="12"/><Setter Property="FontWeight" Value="SemiBold"/>
+    </Style>
+  </Window.Resources>
+
+  <Grid>
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <Border Grid.Row="0" Background="#102126" BorderBrush="#284149" BorderThickness="0,0,0,1" Padding="28,20">
+      <Grid>
+        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+        <Border Width="52" Height="52" CornerRadius="12" Background="#0B171A" BorderBrush="#2D5557" BorderThickness="1" Margin="0,0,15,0">
+          <Image Source="Assets/app-icon.png" Width="45" Height="45" Stretch="Uniform"/>
+        </Border>
+        <StackPanel Grid.Column="1">
+          <TextBlock Text="RESOLUME ARENA CONFIGURATOR" Foreground="{StaticResource AccentBrush}" FontWeight="Bold" FontSize="12"/>
+          <TextBlock Text="Build the show from the NDI job" FontSize="27" FontWeight="SemiBold" Margin="0,4,0,0"/>
+          <TextBlock Text="3840 × 2160  ·  50 fps  ·  one routed NDI output per decoder" Foreground="{StaticResource MutedBrush}" Margin="0,4,0,0"/>
+        </StackPanel>
+        <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+          <Border Background="#17352F" CornerRadius="20" Padding="12,7" Margin="0,0,8,0"><TextBlock x:Name="JobStatusText" Text="NDI job: checking…" Foreground="#8FF0D2"/></Border>
+          <Border Background="#223039" CornerRadius="20" Padding="12,7"><TextBlock x:Name="ArenaStatusText" Text="Arena: checking…" Foreground="#B7C6CB"/></Border>
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+      <StackPanel Margin="28,22,28,24">
+        <Grid Margin="0,0,0,16">
+          <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="16"/><ColumnDefinition/></Grid.ColumnDefinitions>
+          <Border Style="{StaticResource Card}">
+            <StackPanel>
+              <DockPanel Margin="0,0,0,12">
+                <TextBlock Text="DECODER OUTPUTS" Style="{StaticResource Label}" VerticalAlignment="Center"/>
+                <TextBlock x:Name="DecoderCountText" DockPanel.Dock="Right" Text="0" Foreground="{StaticResource AccentBrush}" FontWeight="Bold" HorizontalAlignment="Right"/>
+              </DockPanel>
+              <DataGrid x:Name="DecoderGrid" ItemsSource="{Binding Decoders}" Height="250" AlternationCount="2">
+                <DataGrid.Columns>
+                  <DataGridTextColumn Header="#" Binding="{Binding Order}" Width="38" IsReadOnly="True"/>
+                  <DataGridTextColumn Header="Output / group" Binding="{Binding OutputName}" Width="*" IsReadOnly="True"/>
+                  <DataGridTextColumn Header="IP" Binding="{Binding IpAddress}" Width="105" IsReadOnly="True"/>
+                  <DataGridTextColumn Header="W" Binding="{Binding Width, UpdateSourceTrigger=PropertyChanged}" Width="72"/>
+                  <DataGridTextColumn Header="H" Binding="{Binding Height, UpdateSourceTrigger=PropertyChanged}" Width="72"/>
+                  <DataGridTextColumn Header="Source" Binding="{Binding ResolutionStatus}" Width="74" IsReadOnly="True"/>
+                </DataGrid.Columns>
+              </DataGrid>
+              <TextBlock Text="Width and height come from the decoder's reported HDMI output. Review any row marked Review." Foreground="{StaticResource MutedBrush}" FontSize="12" TextWrapping="Wrap" Margin="0,10,0,0"/>
+            </StackPanel>
+          </Border>
+          <Border Grid.Column="2" Style="{StaticResource Card}">
+            <StackPanel>
+              <DockPanel Margin="0,0,0,12">
+                <TextBlock Text="ENCODER CLIP ORDER" Style="{StaticResource Label}" VerticalAlignment="Center"/>
+                <TextBlock x:Name="EncoderCountText" DockPanel.Dock="Right" Text="0" Foreground="{StaticResource AccentBrush}" FontWeight="Bold" HorizontalAlignment="Right"/>
+              </DockPanel>
+              <DataGrid x:Name="EncoderGrid" ItemsSource="{Binding Encoders}" Height="250" AlternationCount="2">
+                <DataGrid.Columns>
+                  <DataGridTextColumn Header="#" Binding="{Binding Order}" Width="38" IsReadOnly="True"/>
+                  <DataGridTextColumn Header="Encoder" Binding="{Binding DeviceLabel}" Width="*" IsReadOnly="True"/>
+                  <DataGridTextColumn Header="Arena NDI source" Binding="{Binding ArenaSourceName, UpdateSourceTrigger=PropertyChanged}" Width="1.25*"/>
+                  <DataGridTextColumn Header="Match" Binding="{Binding MatchStatus}" Width="82" IsReadOnly="True"/>
+                </DataGrid.Columns>
+              </DataGrid>
+              <TextBlock Text="Sources are matched against Arena's live NDI source list. You can correct a source name before configuring." Foreground="{StaticResource MutedBrush}" FontSize="12" TextWrapping="Wrap" Margin="0,10,0,0"/>
+            </StackPanel>
+          </Border>
+        </Grid>
+
+        <Border Style="{StaticResource Card}">
+          <Grid>
+            <Grid.ColumnDefinitions><ColumnDefinition Width="1.25*"/><ColumnDefinition Width="1.75*"/></Grid.ColumnDefinitions>
+            <StackPanel Margin="0,0,24,0">
+              <TextBlock Text="WHAT WILL BE BUILT" Style="{StaticResource Label}"/>
+              <TextBlock x:Name="PlanSummaryText" Margin="0,9,0,0" TextWrapping="Wrap" LineHeight="22" Text="Refresh to preview the plan."/>
+            </StackPanel>
+            <StackPanel Grid.Column="1">
+              <TextBlock Text="ACTIVITY" Style="{StaticResource Label}"/>
+              <TextBox x:Name="LogBox" Margin="0,9,0,0" Height="132" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" FontFamily="Consolas" FontSize="12"/>
+            </StackPanel>
+          </Grid>
+        </Border>
+      </StackPanel>
+    </ScrollViewer>
+
+    <Border Grid.Row="2" Background="#102126" BorderBrush="#284149" BorderThickness="0,1,0,0" Padding="28,15">
+      <Grid>
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+        <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+        <ProgressBar x:Name="ConfigurationProgress" Grid.ColumnSpan="2" Height="5" Margin="0,0,0,12" Minimum="0" Maximum="100" Value="0" Background="#20343A" Foreground="{StaticResource AccentBrush}"/>
+        <StackPanel Grid.Row="1" VerticalAlignment="Center">
+          <TextBlock x:Name="ValidationText" Text="Waiting for discovery." FontWeight="SemiBold"/>
+          <TextBlock Text="All groups/layers are finalized before Video Router and Advanced Output routes are assigned." Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,3,0,0"/>
+        </StackPanel>
+        <Button x:Name="ConfigureButton" Grid.Row="1" Grid.Column="1" Content="Configure Arena" Click="ConfigureButton_OnClick" IsEnabled="False" Padding="24,12"/>
+      </Grid>
+    </Border>
+  </Grid>
+</Window>

@@ -1,0 +1,25 @@
+
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ResolumeConfigurator", "src\ResolumeConfigurator\ResolumeConfigurator.csproj", "{5C714A67-C58D-4274-8920-F14F65B878D4}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ResolumeConfigurator.Tests", "tests\ResolumeConfigurator.Tests\ResolumeConfigurator.Tests.csproj", "{77E65E8B-838C-49DD-816B-46E6576EE23F}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{5C714A67-C58D-4274-8920-F14F65B878D4}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5C714A67-C58D-4274-8920-F14F65B878D4}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5C714A67-C58D-4274-8920-F14F65B878D4}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5C714A67-C58D-4274-8920-F14F65B878D4}.Release|Any CPU.Build.0 = Release|Any CPU
+		{77E65E8B-838C-49DD-816B-46E6576EE23F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{77E65E8B-838C-49DD-816B-46E6576EE23F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{77E65E8B-838C-49DD-816B-46E6576EE23F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{77E65E8B-838C-49DD-816B-46E6576EE23F}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal

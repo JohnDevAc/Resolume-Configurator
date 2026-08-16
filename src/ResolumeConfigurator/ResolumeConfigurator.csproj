@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>Resolume Arena Configurator</AssemblyName>
+    <RootNamespace>ResolumeConfigurator</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\app-icon.ico</ApplicationIcon>
+    <Product>Resolume Arena Configurator</Product>
+    <Description>Build Resolume Arena compositions and Advanced Output routes from NDI Job Configurator jobs.</Description>
+    <Authors>Resolume Arena Configurator</Authors>
+    <Version>0.2.3</Version>
+  </PropertyGroup>
+  <ItemGroup>
+    <Resource Include="Assets\app-icon.png" />
+  </ItemGroup>
+</Project>
