@@ -235,6 +235,10 @@ public sealed class ResolumeApiClient : IDisposable
 
     public Task AddLayerGroupAsync(CancellationToken ct) => PostAsync("composition/layergroups/add", null, null, ct);
     public Task AddLayerToGroupAsync(long groupId, CancellationToken ct) => PostAsync($"composition/layergroups/by-id/{groupId}/add-layer", null, null, ct);
+    public Task MoveLayerToGroupAsync(long groupId, int layerIndex, CancellationToken ct) =>
+        PostAsync($"composition/layergroups/by-id/{groupId}/move-layer", $"/composition/layers/{layerIndex}", "text/plain", ct);
+    public Task ClearLayerClipsAsync(long layerId, CancellationToken ct) =>
+        PostAsync($"composition/layers/by-id/{layerId}/clearclips", null, null, ct);
     public Task DeleteLayerAsync(long layerId, CancellationToken ct) => DeleteAsync($"composition/layers/by-id/{layerId}", ct);
     public Task DeleteGroupAsync(long groupId, CancellationToken ct) => DeleteAsync($"composition/layergroups/by-id/{groupId}", ct);
     public Task DeleteColumnAsync(long columnId, CancellationToken ct) => DeleteAsync($"composition/columns/by-id/{columnId}", ct);

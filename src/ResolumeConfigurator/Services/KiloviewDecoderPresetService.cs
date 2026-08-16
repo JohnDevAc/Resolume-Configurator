@@ -74,6 +74,63 @@ public sealed class KiloviewDecoderPresetService
             && existingId.Trim().Equals(discoveredId.Trim(), StringComparison.OrdinalIgnoreCase);
     }
 
+    public static bool IsActiveN6Source(string channel, string name, string currentUrl, string outputName, string sourceUrl)
+    {
+        if (!MatchesOutput(channel, name, outputName) || string.IsNullOrWhiteSpace(currentUrl)) return false;
+        if (currentUrl.Equals(sourceUrl, StringComparison.OrdinalIgnoreCase)) return true;
+
+        // N6 firmware can expose the selected NDI sender on a different listener
+        // port from the discovery/preset URL. The sender name and host remain
+        // stable, so verify both instead of requiring the transient port.
+        return TryGetHost(currentUrl, out var currentHost)
+            && TryGetHost(sourceUrl, out var sourceHost)
+            && currentHost.Equals(sourceHost, StringComparison.OrdinalIgnoreCase);
+    }
+
+    public async Task<N6DecoderDiagnostic> InspectN6Async(DecoderRow decoder, CancellationToken ct)
+    {
+        if (decoder.Device.Credentials is null)
+            throw new InvalidOperationException($"NDI Job Configurator has no saved credentials for decoder {decoder.OutputName} ({decoder.IpAddress}).");
+
+        using var client = await AuthorizeN6Async(decoder, ct);
+        using var presetsDocument = await GetJsonAsync(client, "/api/preview/get", "read N6 presets", ct);
+        var presets = N6Positions(presetsDocument.RootElement)
+            .Select(element => new N6PresetSummary(Number(element, "id"), String(element, "stream_name"), String(element, "stream_url", String(element, "url"))))
+            .OrderBy(preset => preset.Id)
+            .ToArray();
+
+        var currentName = "";
+        var currentUrl = "";
+        foreach (var path in new[] { "/api/decoder/current/get.json", "/api/decoderMode/current/get.json" })
+        {
+            try
+            {
+                using var current = await GetJsonAsync(client, path, "read N6 active output", ct);
+                var data = Data(current.RootElement);
+                currentName = String(data, "channel_name", String(data, "name"));
+                currentUrl = String(data, "original_url", String(data, "url", String(data, "ip")));
+                if (!string.IsNullOrWhiteSpace(currentName) || !string.IsNullOrWhiteSpace(currentUrl)) break;
+            }
+            catch (HttpRequestException) { }
+        }
+
+        using var discovery = await PostJsonAsync(client, "/api/source/groups/list", new { is_need_stream = true, show_template = false }, "read N6 discovered sources", ct);
+        var discovered = N6Streams(discovery.RootElement)
+            .Where(source => !String(source, "address").Equals(decoder.IpAddress, StringComparison.OrdinalIgnoreCase))
+            .Where(source => OutputSourceScore(source, decoder.OutputName) > 0)
+            .OrderByDescending(source => OutputSourceScore(source, decoder.OutputName))
+            .ThenByDescending(source => Number(source, "listener_port"))
+            .FirstOrDefault();
+
+        return new N6DecoderDiagnostic(
+            decoder.OutputName,
+            presets,
+            currentName,
+            currentUrl,
+            discovered.ValueKind == JsonValueKind.Object ? String(discovered, "name", String(discovered, "channel_name")) : "",
+            discovered.ValueKind == JsonValueKind.Object ? String(discovered, "url") : "");
+    }
+
     private static async Task<DecoderPresetResult> ConfigureN60Async(DecoderRow decoder, CancellationToken ct)
     {
         using var client = await AuthorizeN60Async(decoder, ct);
@@ -290,8 +347,13 @@ public sealed class KiloviewDecoderPresetService
                 {
                     using var current = await GetJsonAsync(client, path, "verify N6 active output", ct);
                     var data = Data(current.RootElement);
-                    if (MatchesOutput(String(data, "channel_name"), String(data, "name"), outputName)
-                        || SameUrl(data, sourceUrl)) return;
+                    var currentUrl = String(data, "original_url", String(data, "url", String(data, "ip")));
+                    if (IsActiveN6Source(
+                        String(data, "channel_name"),
+                        String(data, "name"),
+                        currentUrl,
+                        outputName,
+                        sourceUrl)) return;
                 }
                 catch (HttpRequestException) { }
             }
@@ -319,7 +381,20 @@ public sealed class KiloviewDecoderPresetService
     private static bool MatchesOutput(string channel, string name, string outputName) =>
         channel.Equals(outputName, StringComparison.OrdinalIgnoreCase)
         || name.Equals(outputName, StringComparison.OrdinalIgnoreCase)
+        || channel.Contains(outputName, StringComparison.OrdinalIgnoreCase)
         || name.Contains(outputName, StringComparison.OrdinalIgnoreCase);
+
+    private static bool TryGetHost(string value, out string host)
+    {
+        var candidate = value.Contains("://", StringComparison.Ordinal) ? value : $"ndi://{value}";
+        if (Uri.TryCreate(candidate, UriKind.Absolute, out var uri) && !string.IsNullOrWhiteSpace(uri.Host))
+        {
+            host = uri.Host;
+            return true;
+        }
+        host = "";
+        return false;
+    }
 
     private static bool IsN60PresetEmpty(JsonElement preset) =>
         string.IsNullOrWhiteSpace(String(preset, "channel_name"))
@@ -421,3 +496,10 @@ public sealed class KiloviewDecoderPresetService
 
 public sealed record N60PresetSummary(int Id, string ChannelName, string Name, string Color, bool IsEmpty);
 public sealed record N6PresetSummary(int Id, string StreamName, string StreamUrl = "");
+public sealed record N6DecoderDiagnostic(
+    string DecoderName,
+    IReadOnlyList<N6PresetSummary> Presets,
+    string CurrentName,
+    string CurrentUrl,
+    string DiscoveredName,
+    string DiscoveredUrl);

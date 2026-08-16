@@ -97,6 +97,6 @@ public sealed record ConfigurationPlan(
 public sealed record ConfigurationResult(
     string CompositionFile,
     string PresetFile,
-    string BackupFile,
+    string? BackupFile,
     IReadOnlyList<string> Log,
     IReadOnlyList<DecoderPresetResult> DecoderPresets);

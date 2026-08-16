@@ -13,6 +13,33 @@ if (args.Contains("--probe-arena", StringComparer.OrdinalIgnoreCase))
     return 0;
 }
 
+if (args.Contains("--probe-n6", StringComparer.OrdinalIgnoreCase))
+{
+    var requested = args.SkipWhile(argument => !argument.Equals("--probe-n6", StringComparison.OrdinalIgnoreCase)).Skip(1).FirstOrDefault() ?? "KV-001";
+    var snapshot = await new NdiJobConfiguratorReader().ReadAsync(CancellationToken.None);
+    var device = snapshot.Devices.Single(device => device.IsOnboarded && device.Role.Equals("Decoder", StringComparison.OrdinalIgnoreCase)
+        && device.Hostname.Contains(requested, StringComparison.OrdinalIgnoreCase));
+    var row = new DecoderRow { Order = 1, Device = device, OutputName = device.Hostname, Width = 1920, Height = 1080 };
+    var diagnostic = await new KiloviewDecoderPresetService().InspectN6Async(row, CancellationToken.None);
+    Console.WriteLine($"decoder={diagnostic.DecoderName}");
+    foreach (var preset in diagnostic.Presets) Console.WriteLine($"slot={preset.Id}|name={preset.StreamName}|url={preset.StreamUrl}");
+    Console.WriteLine($"current={diagnostic.CurrentName}|url={diagnostic.CurrentUrl}");
+    Console.WriteLine($"discovered={diagnostic.DiscoveredName}|url={diagnostic.DiscoveredUrl}");
+    return 0;
+}
+
+if (args.Contains("--configure-n6", StringComparer.OrdinalIgnoreCase))
+{
+    var requested = args.SkipWhile(argument => !argument.Equals("--configure-n6", StringComparison.OrdinalIgnoreCase)).Skip(1).FirstOrDefault() ?? "KV-001";
+    var snapshot = await new NdiJobConfiguratorReader().ReadAsync(CancellationToken.None);
+    var device = snapshot.Devices.Single(device => device.IsOnboarded && device.Role.Equals("Decoder", StringComparison.OrdinalIgnoreCase)
+        && device.Hostname.Contains(requested, StringComparison.OrdinalIgnoreCase));
+    var row = new DecoderRow { Order = 1, Device = device, OutputName = device.Hostname, Width = 1920, Height = 1080 };
+    var result = (await new KiloviewDecoderPresetService().ConfigureAsync(new[] { row }, null, CancellationToken.None)).Single();
+    Console.WriteLine($"decoder={result.DecoderName}|family={result.Family}|slot={result.Slot}|reused={result.ReusedExistingSlot}|activated=true");
+    return 0;
+}
+
 var tests = new (string Name, Action Test)[]
 {
     ("resolution parser", TestResolutionParser),
@@ -221,6 +248,12 @@ static void TestN6PresetSlotSelection()
     Assert(KiloviewDecoderPresetService.SelectN6Slot(presets, "New Arena Output", out reused) == 0 && !reused, "request firmware-managed next empty N6 slot");
     Assert(KiloviewDecoderPresetService.IsSameN6Source("sender-1", "ndi://192.168.0.16:5965", "sender-2", "ndi://192.168.0.16:5965"), "recognize unchanged N6 source URL");
     Assert(!KiloviewDecoderPresetService.IsSameN6Source("sender-1", "ndi://192.168.0.16:5965", "sender-2", "ndi://192.168.0.20:5965"), "recognize changed N6 source URL");
+    Assert(KiloviewDecoderPresetService.IsActiveN6Source(
+        "JOHN-PC (Arena - N6EncoderTest-KV-001)", "", "192.168.0.16:5965",
+        "N6EncoderTest-KV-001", "192.168.0.16:5964"), "accept N6 listener-port normalization for the named Arena output");
+    Assert(!KiloviewDecoderPresetService.IsActiveN6Source(
+        "JOHN-PC (Arena - N6EncoderTest-KV-001)", "", "192.168.0.20:5965",
+        "N6EncoderTest-KV-001", "192.168.0.16:5964"), "reject a matching name from a different NDI host");
 }
 
 static JobDevice Device(string hostname, string channel, string role) => new("id", "192.168.0.1", hostname, "N60", "N60", role, channel, "1920x1080p50", true, "Online");

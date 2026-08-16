@@ -25,62 +25,87 @@ public sealed class ArenaConfigurationOrchestrator
 
         Directory.CreateDirectory(plan.CompositionDirectory);
         var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss-fff");
-        var backup = Path.Combine(plan.CompositionDirectory, $"Before Resolume Configurator {stamp}.avc");
-        await api.SaveCompositionAsync(backup, ct);
-        Report($"Backed up the current composition to {Path.GetFileName(backup)}.");
-
-        var existing = await api.GetCompositionStateAsync(ct);
-        foreach (var group in existing.Groups.Reverse()) await api.DeleteGroupAsync(group.Id, ct);
-
-        var ungrouped = await api.GetCompositionStateAsync(ct);
-        if (ungrouped.Layers.Count == 0)
-            throw new InvalidOperationException("Arena did not retain a temporary layer while resetting the composition.");
-        var starterLayerId = ungrouped.Layers[0].Id;
-        foreach (var layer in ungrouped.Layers.Skip(1).Reverse()) await api.DeleteLayerAsync(layer.Id, ct);
-
-        var targetColumnCount = plan.TotalColumnCount;
-        var resetState = await api.GetCompositionStateAsync(ct);
-        foreach (var columnId in resetState.ColumnIds.Skip(targetColumnCount).Reverse()) await api.DeleteColumnAsync(columnId, ct);
-
-        await api.UpdateCompositionAsync(plan.CompositionName, plan.CompositionWidth, plan.CompositionHeight, ct);
-        await api.GrowCompositionAsync(targetColumnCount, ct);
-        var initial = await api.GetCompositionStateAsync(ct);
-        if (initial.Groups.Count != 0 || initial.Layers.Count != 1 || initial.Layers[0].Id != starterLayerId)
-            throw new InvalidOperationException("Arena did not reach the expected clean composition state.");
-        Report($"Reset the composition to {plan.CompositionWidth} × {plan.CompositionHeight} with {targetColumnCount} columns.");
-
         var groupNamesInBackToFrontOrder = plan.Decoders.Select(d => d.OutputName).Concat(new[] { "LED Wall", "Show" }).ToArray();
         if (groupNamesInBackToFrontOrder.Distinct(StringComparer.OrdinalIgnoreCase).Count() != groupNamesInBackToFrontOrder.Length)
             throw new InvalidOperationException("Decoder names must be unique and cannot be named Show or LED Wall.");
 
-        var createdGroupIds = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
-        foreach (var groupName in groupNamesInBackToFrontOrder)
+        var initial = await api.GetCompositionStateAsync(ct);
+        var targetColumnCount = Math.Max(plan.TotalColumnCount, initial.ColumnIds.Count);
+        await api.UpdateCompositionAsync(plan.CompositionName, plan.CompositionWidth, plan.CompositionHeight, ct);
+        await api.GrowCompositionAsync(targetColumnCount, ct);
+        var working = await api.GetCompositionStateAsync(ct);
+        if (working.Groups.Count > groupNamesInBackToFrontOrder.Length)
+            throw new InvalidOperationException($"The open composition has {working.Groups.Count} groups but this job requires {groupNamesInBackToFrontOrder.Length}; Arena 7.27 cannot delete the surplus groups through its REST API.");
+        if (working.Layers.Count > groupNamesInBackToFrontOrder.Length * 3)
+            throw new InvalidOperationException($"The open composition has {working.Layers.Count} layers but this job uses {groupNamesInBackToFrontOrder.Length * 3}; Arena 7.27 cannot delete the surplus layers through its REST API.");
+        Report($"Overwriting the open composition at {plan.CompositionWidth} × {plan.CompositionHeight}; preserving its {initial.ColumnIds.Count} existing columns and ensuring {targetColumnCount} total.");
+
+        var targetGroupIds = working.Groups.Select(group => group.Id).ToList();
+        while (targetGroupIds.Count < groupNamesInBackToFrontOrder.Length)
         {
             var before = await api.GetCompositionStateAsync(ct);
-            var knownIds = before.Groups.Select(g => g.Id).ToHashSet();
+            var knownIds = before.Groups.Select(group => group.Id).ToHashSet();
             await api.AddLayerGroupAsync(ct);
-            var after = await api.GetCompositionStateAsync(ct);
-            var group = after.Groups.SingleOrDefault(g => !knownIds.Contains(g.Id))
-                ?? throw new InvalidOperationException("Arena did not report the newly created layer group.");
-
-            await api.RenameGroupAsync(group.Id, groupName, ct);
-            await api.AddLayerToGroupAsync(group.Id, ct);
-            await api.AddLayerToGroupAsync(group.Id, ct);
-            var refreshed = (await api.GetCompositionStateAsync(ct)).Groups.Single(g => g.Id == group.Id);
-            if (refreshed.Layers.Count != 3) throw new InvalidOperationException($"Arena created {refreshed.Layers.Count} layers in {groupName}; expected 3.");
-
-            var names = new[] { "Holding", "Secondary", "Primary" };
-            for (var i = 0; i < 3; i++) await api.RenameLayerAsync(refreshed.Layers[i].Id, names[i], ct);
-            refreshed = (await api.GetCompositionStateAsync(ct)).Groups.Single(g => g.Id == group.Id);
-            createdGroupIds[groupName] = refreshed.Id;
-            Report($"Created {groupName}: Holding, Secondary, Primary.");
+            var added = (await api.GetCompositionStateAsync(ct)).Groups.SingleOrDefault(group => !knownIds.Contains(group.Id))
+                ?? throw new InvalidOperationException("Arena did not report the newly added layer group.");
+            targetGroupIds.Add(added.Id);
         }
 
-        await api.DeleteLayerAsync(starterLayerId, ct);
+        for (var index = 0; index < targetGroupIds.Count; index++)
+            await api.RenameGroupAsync(targetGroupIds[index], groupNamesInBackToFrontOrder[index], ct);
+
+        foreach (var targetGroupId in targetGroupIds)
+        {
+            while (true)
+            {
+                var state = await api.GetCompositionStateAsync(ct);
+                var targetGroup = state.Groups.Single(group => group.Id == targetGroupId);
+                if (targetGroup.Layers.Count >= 3) break;
+
+                var groupedIds = state.Groups.SelectMany(group => group.Layers).Select(layer => layer.Id).ToHashSet();
+                var candidate = state.Layers.FirstOrDefault(layer => !groupedIds.Contains(layer.Id));
+                candidate ??= state.Groups
+                    .Where(group => group.Id != targetGroupId && targetGroupIds.Contains(group.Id) && group.Layers.Count > 3)
+                    .SelectMany(group => group.Layers.Skip(3))
+                    .FirstOrDefault();
+
+                if (candidate is null)
+                {
+                    await api.AddLayerToGroupAsync(targetGroupId, ct);
+                    continue;
+                }
+
+                var layerIndex = state.Layers.Select((layer, index) => (layer.Id, Index: index + 1))
+                    .Single(layer => layer.Id == candidate.Id).Index;
+                await api.MoveLayerToGroupAsync(targetGroupId, layerIndex, ct);
+            }
+        }
+
+        var createdGroupIds = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+        for (var groupIndex = 0; groupIndex < groupNamesInBackToFrontOrder.Length; groupIndex++)
+        {
+            var groupName = groupNamesInBackToFrontOrder[groupIndex];
+            var refreshed = (await api.GetCompositionStateAsync(ct)).Groups.Single(group => group.Id == targetGroupIds[groupIndex]);
+            if (refreshed.Layers.Count != 3) throw new InvalidOperationException($"Arena assigned {refreshed.Layers.Count} layers to {groupName}; expected 3.");
+
+            var names = new[] { "Holding", "Secondary", "Primary" };
+            for (var i = 0; i < 3; i++)
+            {
+                await api.ClearLayerClipsAsync(refreshed.Layers[i].Id, ct);
+                await api.RenameLayerAsync(refreshed.Layers[i].Id, names[i], ct);
+            }
+            refreshed = (await api.GetCompositionStateAsync(ct)).Groups.Single(group => group.Id == targetGroupIds[groupIndex]);
+            createdGroupIds[groupName] = refreshed.Id;
+            Report($"Overwrote {groupName}: Holding, Secondary, Primary.");
+        }
 
         // Group and layer creation is now complete. All routing is deliberately
         // resolved from this final state because Arena uses mutable 1-based indices.
         var finalStructure = await api.GetCompositionStateAsync(ct);
+        var groupedLayerIds = finalStructure.Groups.SelectMany(group => group.Layers).Select(layer => layer.Id).ToHashSet();
+        var ungroupedLayerCount = finalStructure.Layers.Count(layer => !groupedLayerIds.Contains(layer.Id));
+        if (ungroupedLayerCount != 0)
+            throw new InvalidOperationException($"Arena retained {ungroupedLayerCount} ungrouped starter layer(s).");
         var finalNames = finalStructure.Groups.Select(g => g.Name).ToArray();
         if (finalNames.Length < 2 || !finalNames[^1].Equals("Show", StringComparison.OrdinalIgnoreCase) ||
             !finalNames[^2].Equals("LED Wall", StringComparison.OrdinalIgnoreCase))
@@ -211,7 +236,7 @@ public sealed class ArenaConfigurationOrchestrator
         api.Dispose();
         await new ArenaRestartService().RestartAsync(compositionFile, safeCompositionName, progress, ct);
         Report("Arena restart initiated. Decoder activation will report back in the main window.");
-        return new ConfigurationResult(compositionFile, presetFile, backup, log, []);
+        return new ConfigurationResult(compositionFile, presetFile, null, log, []);
     }
 
     public static IReadOnlyList<int> GetSourceColumnIndices(ConfigurationPlan plan) =>
