@@ -17,15 +17,35 @@ public partial class MainWindow : Window
     private ArenaProduct? _product;
     private bool _busy;
     private bool _decoderHelperPending;
+    private bool _updatingSetupConstraints;
     private string _compositionName = "NDI Job";
     private const int DecoderHelperStatusMessage = 0x8001;
 
     public ObservableCollection<DecoderRow> Decoders { get; } = [];
     public ObservableCollection<EncoderRow> Encoders { get; } = [];
+    public IReadOnlyList<WorkspaceResolutionOption> WorkspaceResolutions { get; } =
+    [
+        new("1080p", 1920, 1080),
+        new("4K", 3840, 2160),
+        new("5K", 5120, 2880),
+        new("8K", 7680, 4320)
+    ];
+    public IReadOnlyList<int> FrameRates { get; } = [60, 50];
+
     public MainWindow()
     {
         InitializeComponent();
         DataContext = this;
+        WorkspaceResolutionComboBox.SelectedItem = WorkspaceResolutions.Single(option => option.Name == "4K");
+        FrameRateComboBox.SelectedItem = 50;
+        WorkspaceResolutionComboBox.SelectionChanged += (_, _) => UpdatePlan();
+        FrameRateComboBox.SelectionChanged += (_, _) => UpdatePlan();
+        ColumnCountSlider.ValueChanged += (_, _) => UpdatePlan();
+        SourceStartColumnSlider.ValueChanged += (_, _) => UpdatePlan();
+        NdiCompositionSharingToggle.Checked += (_, _) => UpdatePlan();
+        NdiCompositionSharingToggle.Unchecked += (_, _) => UpdatePlan();
+        AutoPlaceSourcesToggle.Checked += (_, _) => UpdatePlan();
+        AutoPlaceSourcesToggle.Unchecked += (_, _) => UpdatePlan();
         SourceInitialized += (_, _) => ((HwndSource)PresentationSource.FromVisual(this)).AddHook(WindowMessageHook);
         Loaded += async (_, _) => await InitializeAsync();
     }
@@ -66,12 +86,14 @@ public partial class MainWindow : Window
         LogBox.Clear();
         Decoders.Clear();
         Encoders.Clear();
+        EncoderMatchWarningText.Visibility = Visibility.Collapsed;
         _product = null;
         try
         {
             _snapshot = await _jobReader.ReadAsync();
             _compositionName = _snapshot.JobName;
-            JobStatusText.Text = $"NDI job: {_snapshot.Devices.Count} devices";
+            JobStatusText.Text = _snapshot.JobName;
+            JobStatusText.ToolTip = $"{_snapshot.Devices.Count} device{Plural(_snapshot.Devices.Count)} in the current NDI Configurator job";
 
             var decoderDevices = _snapshot.Devices.Where(d => d.IsOnboarded && d.Role.Equals("Decoder", StringComparison.OrdinalIgnoreCase)).ToArray();
             var encoderDevices = _snapshot.Devices.Where(d => d.IsOnboarded && d.Role.Equals("Encoder", StringComparison.OrdinalIgnoreCase)).ToArray();
@@ -117,7 +139,8 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            JobStatusText.Text = "NDI job: unavailable";
+            JobStatusText.Text = "JOB UNAVAILABLE";
+            JobStatusText.ToolTip = null;
             ArenaStatusText.Text = "Arena: not checked";
             AppendLog(ex.Message);
             UpdatePlan();
@@ -129,25 +152,30 @@ public partial class MainWindow : Window
 
     private void UpdatePlan()
     {
-        var missingSources = Encoders.Count(e => string.IsNullOrWhiteSpace(e.ArenaSourceToken));
+        if (_updatingSetupConstraints || WorkspaceResolutionComboBox is null || FrameRateComboBox is null || ColumnCountSlider is null) return;
+        UpdateSetupConstraints();
+        var resolution = WorkspaceResolutionComboBox.SelectedItem as WorkspaceResolutionOption ?? WorkspaceResolutions[1];
+        var framesPerSecond = FrameRateComboBox.SelectedItem is int selectedFrameRate ? selectedFrameRate : 50;
+        var totalColumnCount = (int)ColumnCountSlider.Value;
+        var sourceStartColumn = (int)SourceStartColumnSlider.Value;
+        var autoPlaceSources = AutoPlaceSourcesToggle.IsChecked == true;
+        var sharingStatus = NdiCompositionSharingToggle.IsChecked == true ? "NDI SHARING ON" : "NDI SHARING OFF";
+        ConfigurationSummaryText.Text = $"{resolution.Name.ToUpperInvariant()}  ·  {framesPerSecond} FPS  ·  {totalColumnCount} COLUMNS  ·  {sharingStatus}";
+
+        var unmatchedSources = Encoders.Count(e => string.IsNullOrWhiteSpace(e.ArenaSourceToken));
+        EncoderMatchWarningText.Visibility = unmatchedSources > 0 ? Visibility.Visible : Visibility.Collapsed;
+        var missingSources = autoPlaceSources ? unmatchedSources : 0;
         var reviewResolutions = Decoders.Count(d => d.UsedFallbackResolution);
-        PlanSummaryText.Text =
-            $"• Show at top, LED Wall second, then {Decoders.Count} decoder group{Plural(Decoders.Count)}\n" +
-            $"• Every group has Primary / Secondary / Holding layers\n" +
-            $"• Exactly {ArenaConfigurationOrchestrator.TotalColumnCount} columns; {Encoders.Count} encoder source{Plural(Encoders.Count)} copied to all three layers in columns 1–{Math.Max(Encoders.Count, 1)}\n" +
-            $"• The same encoder order is also loaded into all three Show layers\n" +
-            $"• Decoder Primary layers get an enabled Video Router → Show in column {Encoders.Count + 1}\n" +
-            $"• NDI clips are resized to Fit and their live thumbnails are refreshed\n" +
-            $"• {Decoders.Count + 1} NDI screen{Plural(Decoders.Count + 1)} (Show + decoders), plus one LED Wall virtual output\n" +
-            $"• Each decoder reuses its matching app-managed preset slot, or takes the next empty slot, then activates it\n" +
-            $"• Composition: 3840 × 2160 at 50 fps; Arena restarts to activate Advanced Output";
 
         var errors = new List<string>();
         if (_product is null) errors.Add("Arena webserver is not connected");
         if (Decoders.Count == 0) errors.Add("no onboarded decoders were found");
-        if (Encoders.Count == 0) errors.Add("no onboarded encoders were found");
+        if (autoPlaceSources && Encoders.Count == 0) errors.Add("no onboarded encoders were found for automatic placement");
+        if (autoPlaceSources && Encoders.Count + 1 > ArenaConfigurationOrchestrator.MaximumColumnCount)
+            errors.Add($"{Encoders.Count} encoder sources plus the Video Router exceed the {ArenaConfigurationOrchestrator.MaximumColumnCount}-column maximum");
         if (Decoders.Any(decoder => decoder.Device.Credentials is null)) errors.Add("saved decoder credentials are missing from NDI Job Configurator");
-        if (Encoders.Count + 1 > ArenaConfigurationOrchestrator.TotalColumnCount) errors.Add($"more than {ArenaConfigurationOrchestrator.TotalColumnCount - 1} encoders cannot fit with the Video Router");
+        if (autoPlaceSources && sourceStartColumn + Encoders.Count > totalColumnCount)
+            errors.Add($"sources starting at column {sourceStartColumn} leave no column for the Video Router");
         if (missingSources > 0) errors.Add($"{missingSources} encoder source{Plural(missingSources)} need matching");
         if (string.IsNullOrWhiteSpace(_compositionName)) errors.Add("composition name is empty");
         if (Decoders.Any(d => d.Width is < 320 or > 32768 || d.Height is < 240 or > 32768)) errors.Add("a decoder resolution is invalid");
@@ -158,11 +186,41 @@ public partial class MainWindow : Window
             : "Not ready — " + string.Join("; ", errors) + ".";
     }
 
+    private void UpdateSetupConstraints()
+    {
+        _updatingSetupConstraints = true;
+        try
+        {
+            var autoPlaceSources = AutoPlaceSourcesToggle.IsChecked == true;
+            var requestedStartColumn = Math.Max(1, (int)SourceStartColumnSlider.Value);
+            var dynamicMinimum = ArenaConfigurationOrchestrator.GetMinimumColumnCountForPlacement(
+                requestedStartColumn,
+                Encoders.Count,
+                autoPlaceSources);
+            ColumnCountSlider.Minimum = dynamicMinimum;
+
+            var availableStartMaximum = autoPlaceSources
+                ? Math.Max(1, (int)ColumnCountSlider.Value - Encoders.Count)
+                : (int)ColumnCountSlider.Value;
+            SourceStartColumnSlider.Maximum = availableStartMaximum;
+            ColumnCountHelpText.Text = autoPlaceSources
+                ? $"Minimum {dynamicMinimum}: starting offset + {Encoders.Count} source{Plural(Encoders.Count)} + Video Router. Maximum 50."
+                : "Choose between 5 and 50 columns.";
+        }
+        finally { _updatingSetupConstraints = false; }
+    }
+
     private ConfigurationPlan BuildPlan()
     {
         var paths = ArenaPaths.Resolve();
+        var resolution = WorkspaceResolutionComboBox.SelectedItem as WorkspaceResolutionOption ?? WorkspaceResolutions[1];
+        var framesPerSecond = FrameRateComboBox.SelectedItem is int selectedFrameRate ? selectedFrameRate : 50;
         return new ConfigurationPlan(
-            _compositionName.Trim(), 3840, 2160, 50,
+            _compositionName.Trim(), resolution.Width, resolution.Height, framesPerSecond,
+            (int)ColumnCountSlider.Value,
+            NdiCompositionSharingToggle.IsChecked == true,
+            AutoPlaceSourcesToggle.IsChecked == true,
+            (int)SourceStartColumnSlider.Value,
             Decoders.ToArray(), Encoders.ToArray(),
             _compositionName.Trim() + " - NDI Outputs", paths.Compositions, paths.AdvancedOutputPresets);
     }
@@ -200,7 +258,16 @@ public partial class MainWindow : Window
         }
     }
 
-    private void SetBusy(bool value) { _busy = value; ConfigureButton.IsEnabled = !value; Cursor = value ? System.Windows.Input.Cursors.Wait : null; }
+    private async void RefreshDetectionButton_OnClick(object sender, RoutedEventArgs e) => await RefreshAsync();
+
+    private void SetBusy(bool value)
+    {
+        _busy = value;
+        Cursor = value ? System.Windows.Input.Cursors.Wait : null;
+        RefreshDetectionButton.IsEnabled = !value;
+        if (value) ConfigureButton.IsEnabled = false;
+        else UpdatePlan();
+    }
     private void AppendLog(string message) { LogBox.AppendText($"{DateTime.Now:HH:mm:ss}  {message}{Environment.NewLine}"); LogBox.ScrollToEnd(); }
     private IntPtr WindowMessageHook(IntPtr window, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
     {

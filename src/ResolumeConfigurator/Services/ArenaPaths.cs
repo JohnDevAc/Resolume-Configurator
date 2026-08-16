@@ -1,6 +1,11 @@
 namespace ResolumeConfigurator.Services;
 
-public sealed record ArenaUserPaths(string Root, string Compositions, string AdvancedOutputPresets, string AdvancedOutputPreference);
+public sealed record ArenaUserPaths(
+    string Root,
+    string Compositions,
+    string AdvancedOutputPresets,
+    string AdvancedOutputPreference,
+    string SimpleOutputPreference);
 
 public static class ArenaPaths
 {
@@ -17,7 +22,8 @@ public static class ArenaPaths
             root,
             Path.Combine(root, "Compositions"),
             Path.Combine(root, "Presets", "Advanced Output"),
-            Path.Combine(root, "Preferences", "AdvancedOutput.xml"));
+            Path.Combine(root, "Preferences", "AdvancedOutput.xml"),
+            Path.Combine(root, "Preferences", "SimpleOutput.xml"));
     }
 
     public static string SafeFileName(string value, string fallback)

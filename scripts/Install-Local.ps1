@@ -5,14 +5,30 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$executableName = 'Resolume Arena Configurator.exe'
 if ([string]::IsNullOrWhiteSpace($SourceDirectory)) {
-    $SourceDirectory = Join-Path $PSScriptRoot '..\artifacts\publish\win-x64'
+    $adjacentExecutable = Join-Path $PSScriptRoot $executableName
+    $SourceDirectory = if (Test-Path -LiteralPath $adjacentExecutable) {
+        $PSScriptRoot
+    }
+    else {
+        Join-Path $PSScriptRoot '..\artifacts\publish\win-x64'
+    }
 }
 $source = (Resolve-Path -LiteralPath $SourceDirectory).Path
-$executableName = 'Resolume Arena Configurator.exe'
 $sourceExecutable = Join-Path $source $executableName
 if (-not (Test-Path -LiteralPath $sourceExecutable)) {
     throw "Published app not found: $sourceExecutable"
+}
+$versionInfo = [Diagnostics.FileVersionInfo]::GetVersionInfo($sourceExecutable)
+$displayVersion = if ([string]::IsNullOrWhiteSpace($versionInfo.ProductVersion)) {
+    $versionInfo.FileVersion
+}
+else {
+    $versionInfo.ProductVersion.Split('+')[0]
+}
+if ([string]::IsNullOrWhiteSpace($displayVersion)) {
+    throw "Could not determine the published app version: $sourceExecutable"
 }
 
 $installDirectory = Join-Path $env:LOCALAPPDATA 'Programs\Resolume Arena Configurator'
@@ -44,7 +60,7 @@ if (-not $NoDesktopShortcut) {
 $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ResolumeArenaConfigurator'
 New-Item -Path $uninstallKey -Force | Out-Null
 New-ItemProperty -Path $uninstallKey -Name DisplayName -Value 'Resolume Arena Configurator' -PropertyType String -Force | Out-Null
-New-ItemProperty -Path $uninstallKey -Name DisplayVersion -Value '0.2.3' -PropertyType String -Force | Out-Null
+New-ItemProperty -Path $uninstallKey -Name DisplayVersion -Value $displayVersion -PropertyType String -Force | Out-Null
 New-ItemProperty -Path $uninstallKey -Name Publisher -Value 'Local test build' -PropertyType String -Force | Out-Null
 New-ItemProperty -Path $uninstallKey -Name InstallLocation -Value $installDirectory -PropertyType String -Force | Out-Null
 New-ItemProperty -Path $uninstallKey -Name DisplayIcon -Value "$installedExecutable,0" -PropertyType String -Force | Out-Null

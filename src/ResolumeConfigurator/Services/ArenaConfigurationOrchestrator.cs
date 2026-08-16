@@ -5,13 +5,19 @@ namespace ResolumeConfigurator.Services;
 
 public sealed class ArenaConfigurationOrchestrator
 {
-    public const int TotalColumnCount = 20;
+    public const int DefaultColumnCount = 20;
+    public const int MinimumColumnCount = 5;
+    public const int MaximumColumnCount = 50;
+    public const int DefaultSourceStartColumn = 5;
 
     public async Task<ConfigurationResult> ConfigureAsync(ConfigurationPlan plan, IProgress<string>? progress, CancellationToken ct)
     {
         var log = new List<string>();
         void Report(string message) { log.Add(message); progress?.Report(message); }
         using var api = new ResolumeApiClient();
+        ValidatePlan(plan);
+        var sourceColumnIndices = GetSourceColumnIndices(plan);
+        var routerColumnIndex = GetRouterColumnIndex(plan);
         var product = await api.GetProductAsync(ct);
         if (!product.Name.Equals("Arena", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException($"Resolume Arena is required; the webserver reported {product.Name}.");
@@ -32,9 +38,7 @@ public sealed class ArenaConfigurationOrchestrator
         var starterLayerId = ungrouped.Layers[0].Id;
         foreach (var layer in ungrouped.Layers.Skip(1).Reverse()) await api.DeleteLayerAsync(layer.Id, ct);
 
-        if (plan.Encoders.Count + 1 > TotalColumnCount)
-            throw new InvalidOperationException($"The job has {plan.Encoders.Count} encoder feeds, but a {TotalColumnCount}-column composition must retain one column for the Video Router.");
-        const int targetColumnCount = TotalColumnCount;
+        var targetColumnCount = plan.TotalColumnCount;
         var resetState = await api.GetCompositionStateAsync(ct);
         foreach (var columnId in resetState.ColumnIds.Skip(targetColumnCount).Reverse()) await api.DeleteColumnAsync(columnId, ct);
 
@@ -88,26 +92,30 @@ public sealed class ArenaConfigurationOrchestrator
         Report("Finalized every group and layer; resolving routes from Arena's final indices.");
 
         var sourceGroupNames = plan.Decoders.Select(decoder => decoder.OutputName).Append("Show").ToArray();
-        foreach (var groupName in sourceGroupNames)
+        if (plan.AutoPlaceNdiSources)
         {
-            var group = finalStructure.Groups.Single(g => g.Id == createdGroupIds[groupName]);
-            foreach (var layer in group.Layers)
+            foreach (var groupName in sourceGroupNames)
             {
-                if (layer.ClipIds.Count < plan.Encoders.Count + 1)
-                    throw new InvalidOperationException($"Layer {layer.Name} does not have enough columns for encoder sources and routing.");
-                for (var column = 0; column < plan.Encoders.Count; column++)
-                    await api.OpenSourceAsync(layer.ClipIds[column], plan.Encoders[column].ArenaSourceToken, ct);
+                var group = finalStructure.Groups.Single(g => g.Id == createdGroupIds[groupName]);
+                foreach (var layer in group.Layers)
+                {
+                    if (layer.ClipIds.Count < targetColumnCount)
+                        throw new InvalidOperationException($"Layer {layer.Name} does not expose all {targetColumnCount} requested columns.");
+                    for (var encoder = 0; encoder < plan.Encoders.Count; encoder++)
+                        await api.OpenSourceAsync(layer.ClipIds[sourceColumnIndices[encoder]], plan.Encoders[encoder].ArenaSourceToken, ct);
+                }
+                Report($"Filled encoder columns {plan.SourceStartColumn}–{plan.SourceStartColumn + plan.Encoders.Count - 1} in all three layers of {group.Name}.");
             }
-            Report($"Filled encoder columns in all three layers of {group.Name}.");
         }
+        else Report("Skipped automatic NDI source placement; all source slots remain available for manual setup.");
 
         foreach (var decoder in plan.Decoders)
         {
             var group = finalStructure.Groups.Single(g => g.Id == createdGroupIds[decoder.OutputName]);
             var primary = group.Layers.Single(l => l.Name.Equals("Primary", StringComparison.OrdinalIgnoreCase));
-            var routerClipId = primary.ClipIds[plan.Encoders.Count];
+            var routerClipId = primary.ClipIds[routerColumnIndex];
             await api.OpenSourceAsync(routerClipId, "Video Router", ct);
-            Report($"Loaded {group.Name} Primary column {plan.Encoders.Count + 1} Video Router.");
+            Report($"Loaded {group.Name} Primary column {routerColumnIndex + 1} Video Router.");
         }
 
         // Arena names a reloaded composition from its filename and can stall when
@@ -124,6 +132,7 @@ public sealed class ArenaConfigurationOrchestrator
         await api.SaveCompositionAsync(compositionFile, ct);
         SetCompositionFrameRate(compositionFile, plan.FramesPerSecond);
         SetVideoRouterInputs(compositionFile, groupIndices["Show"], plan.Decoders.Count);
+        SetCollapsedLayerStates(compositionFile);
 
         // The current composition already has the job name. Give the live graph a
         // temporary marker so OpenCompositionAsync cannot mistake the old graph
@@ -135,24 +144,27 @@ public sealed class ArenaConfigurationOrchestrator
         // Confirm that the patched composition is structurally complete before
         // writing Advanced Output and restarting Arena.
         var reloadedStructure = await api.GetCompositionStateAsync(ct);
-        if (reloadedStructure.ColumnIds.Count != TotalColumnCount)
-            throw new InvalidOperationException($"Arena reloaded {reloadedStructure.ColumnIds.Count} columns; expected exactly {TotalColumnCount}.");
+        if (reloadedStructure.ColumnIds.Count != targetColumnCount)
+            throw new InvalidOperationException($"Arena reloaded {reloadedStructure.ColumnIds.Count} columns; expected exactly {targetColumnCount}.");
 
         // Apply and verify every live clip state before the final save. These
         // settings and refreshed thumbnails are retained in the AVC across the
         // Arena restart, so they must not be redundantly driven through the API
         // from the process that launched the replacement Arena instance.
         var ndiClipIds = new List<long>();
-        foreach (var groupName in sourceGroupNames)
+        if (plan.AutoPlaceNdiSources)
         {
-            var group = reloadedStructure.Groups.Single(g => g.Name.Equals(groupName, StringComparison.OrdinalIgnoreCase));
-            foreach (var layer in group.Layers)
+            foreach (var groupName in sourceGroupNames)
             {
-                for (var column = 0; column < plan.Encoders.Count; column++)
+                var group = reloadedStructure.Groups.Single(g => g.Name.Equals(groupName, StringComparison.OrdinalIgnoreCase));
+                foreach (var layer in group.Layers)
                 {
-                    var clipId = layer.ClipIds[column];
-                    await api.ConfigureClipFitAsync(clipId, ct);
-                    ndiClipIds.Add(clipId);
+                    foreach (var sourceColumnIndex in sourceColumnIndices)
+                    {
+                        var clipId = layer.ClipIds[sourceColumnIndex];
+                        await api.ConfigureClipFitAsync(clipId, ct);
+                        ndiClipIds.Add(clipId);
+                    }
                 }
             }
         }
@@ -162,7 +174,7 @@ public sealed class ArenaConfigurationOrchestrator
         {
             var group = reloadedStructure.Groups.Single(g => g.Name.Equals(decoder.OutputName, StringComparison.OrdinalIgnoreCase));
             var primary = group.Layers.Single(l => l.Name.Equals("Primary", StringComparison.OrdinalIgnoreCase));
-            var routerClipId = primary.ClipIds[plan.Encoders.Count];
+            var routerClipId = primary.ClipIds[routerColumnIndex];
             await api.ConfigureVideoRouterFitAsync(routerClipId, ct);
             await api.ConnectClipAsync(routerClipId, ct);
             routerClipIds.Add(routerClipId);
@@ -171,7 +183,7 @@ public sealed class ArenaConfigurationOrchestrator
         if (ndiClipIds.Count > 0) await Task.Delay(500, ct);
         foreach (var clipId in ndiClipIds) await api.UpdateClipThumbnailAsync(clipId, ct);
         await api.SaveCompositionAsync(compositionFile, ct);
-        Report($"Set {ndiClipIds.Count} decoder/Show NDI clips and {routerClipIds.Count} routers to Fit, enabled every decoder router, refreshed all NDI thumbnails, and saved the routed {TotalColumnCount}-column composition at {plan.FramesPerSecond} fps.");
+        Report($"Set {ndiClipIds.Count} decoder/Show NDI clips and {routerClipIds.Count} routers to Fit, enabled every decoder router, refreshed all NDI thumbnails, collapsed Secondary/Holding layers, and saved the routed {targetColumnCount}-column composition at {plan.FramesPerSecond} fps.");
 
         var generator = new AdvancedOutputPresetGenerator();
         var preset = generator.Generate(plan, product, groupIndices);
@@ -179,9 +191,18 @@ public sealed class ArenaConfigurationOrchestrator
         Report($"Wrote Advanced Output preset {Path.GetFileName(presetFile)}.");
 
         var expectedScreens = new[] { "Show", "LED Wall" }.Concat(plan.Decoders.Select(decoder => decoder.OutputName)).ToArray();
+        var arenaPaths = ArenaPaths.Resolve();
         var activator = new AdvancedOutputActivator();
-        await activator.ActivateAsync(presetFile, ArenaPaths.Resolve().AdvancedOutputPreference, expectedScreens, ct);
+        await activator.ActivateAsync(presetFile, arenaPaths.AdvancedOutputPreference, expectedScreens, ct);
         Report($"Updated Arena's active Advanced Output XML with {expectedScreens.Length} outputs (no window automation).");
+
+        await new SimpleOutputConfigurationService().ApplyNdiCompositionSharingAsync(
+            arenaPaths.SimpleOutputPreference,
+            plan.EnableNdiCompositionSharing,
+            plan.CompositionWidth,
+            plan.CompositionHeight,
+            ct);
+        Report($"NDI composition sharing will be {(plan.EnableNdiCompositionSharing ? "enabled" : "disabled")} from Resolume's persisted SimpleOutput.xml after restart.");
 
         // Close every connection to the current Arena webserver before its
         // process is replaced. Keeping the pre-restart HttpClient alive can
@@ -191,6 +212,31 @@ public sealed class ArenaConfigurationOrchestrator
         await new ArenaRestartService().RestartAsync(compositionFile, safeCompositionName, progress, ct);
         Report("Arena restart initiated. Decoder activation will report back in the main window.");
         return new ConfigurationResult(compositionFile, presetFile, backup, log, []);
+    }
+
+    public static IReadOnlyList<int> GetSourceColumnIndices(ConfigurationPlan plan) =>
+        plan.AutoPlaceNdiSources
+            ? Enumerable.Range(plan.SourceStartColumn - 1, plan.Encoders.Count).ToArray()
+            : [];
+
+    public static int GetRouterColumnIndex(ConfigurationPlan plan) =>
+        plan.AutoPlaceNdiSources ? plan.SourceStartColumn - 1 + plan.Encoders.Count : 0;
+
+    public static int GetMinimumColumnCountForPlacement(int sourceStartColumn, int sourceCount, bool autoPlaceNdiSources) =>
+        autoPlaceNdiSources
+            ? Math.Clamp(sourceStartColumn + sourceCount, MinimumColumnCount, MaximumColumnCount)
+            : MinimumColumnCount;
+
+    public static void ValidatePlan(ConfigurationPlan plan)
+    {
+        if (plan.TotalColumnCount is < MinimumColumnCount or > MaximumColumnCount)
+            throw new InvalidOperationException($"Column count must be between {MinimumColumnCount} and {MaximumColumnCount}.");
+        if (plan.SourceStartColumn is < 1 || plan.SourceStartColumn > plan.TotalColumnCount)
+            throw new InvalidOperationException($"Source starting column must be between 1 and {plan.TotalColumnCount}.");
+        if (plan.FramesPerSecond is not (50 or 60))
+            throw new InvalidOperationException("Frame rate must be 50 or 60 fps.");
+        if (GetRouterColumnIndex(plan) >= plan.TotalColumnCount)
+            throw new InvalidOperationException($"The selected source starting column and {plan.Encoders.Count} encoder feeds leave no column for the Video Router.");
     }
 
     public static void SetCompositionFrameRate(string path, int framesPerSecond)
@@ -237,6 +283,30 @@ public sealed class ArenaConfigurationOrchestrator
             input.SetAttributeValue("default", "0:0");
             input.SetAttributeValue("value", $"1:{showGroupIndex}");
             input.SetAttributeValue("storeChoices", "0");
+        }
+        document.Save(path, SaveOptions.DisableFormatting);
+    }
+
+    public static void SetCollapsedLayerStates(string path)
+    {
+        var document = XDocument.Load(path, LoadOptions.PreserveWhitespace);
+        foreach (var layer in document.Root?.Elements("Layer") ?? [])
+        {
+            var layerName = layer.Elements("Params")
+                .SelectMany(parameters => parameters.Elements("Param"))
+                .FirstOrDefault(parameter => (string?)parameter.Attribute("name") == "Name")?
+                .Attribute("value")?.Value;
+            if (layerName is null) continue;
+
+            var layerView = layer.Element("LayerView");
+            if (layerView is null)
+            {
+                layerView = new XElement("LayerView", new XAttribute("name", "LayerView"));
+                layer.Add(layerView);
+            }
+            layerView.SetAttributeValue("foldedControl",
+                layerName.Equals("Holding", StringComparison.OrdinalIgnoreCase) ||
+                layerName.Equals("Secondary", StringComparison.OrdinalIgnoreCase) ? "1" : "0");
         }
         document.Save(path, SaveOptions.DisableFormatting);
     }

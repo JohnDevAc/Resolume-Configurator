@@ -12,7 +12,7 @@
     <Product>Resolume Arena Configurator</Product>
     <Description>Build Resolume Arena compositions and Advanced Output routes from NDI Job Configurator jobs.</Description>
     <Authors>Resolume Arena Configurator</Authors>
-    <Version>0.2.3</Version>
+    <Version>0.3.2</Version>
   </PropertyGroup>
   <ItemGroup>
     <Resource Include="Assets\app-icon.png" />

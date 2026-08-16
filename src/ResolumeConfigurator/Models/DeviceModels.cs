@@ -74,11 +74,20 @@ public sealed record ArenaProduct(string Name, int Major, int Minor, int Micro, 
     public override string ToString() => $"{Name} {Major}.{Minor}.{Micro}";
 }
 
+public sealed record WorkspaceResolutionOption(string Name, int Width, int Height)
+{
+    public override string ToString() => Name;
+}
+
 public sealed record ConfigurationPlan(
     string CompositionName,
     int CompositionWidth,
     int CompositionHeight,
     int FramesPerSecond,
+    int TotalColumnCount,
+    bool EnableNdiCompositionSharing,
+    bool AutoPlaceNdiSources,
+    int SourceStartColumn,
     IReadOnlyList<DecoderRow> Decoders,
     IReadOnlyList<EncoderRow> Encoders,
     string PresetName,

@@ -20,8 +20,10 @@ var tests = new (string Name, Action Test)[]
     ("Arena source URL", TestSourceUrl),
     ("advanced output preset", TestPreset),
     ("active advanced output XML", TestActiveAdvancedOutput),
-    ("composition column count", TestColumnCount),
+    ("configuration options", TestConfigurationOptions),
     ("composition fps patch", TestFrameRatePatch),
+    ("collapsed layer state", TestCollapsedLayerState),
+    ("NDI composition sharing preference", TestNdiCompositionSharingPreference),
     ("Video Router input patch", TestVideoRouterInputPatch),
     ("N60 decoder preset slot selection", TestN60PresetSlotSelection),
     ("N6 decoder preset slot selection", TestN6PresetSlotSelection)
@@ -66,7 +68,7 @@ static void TestPreset()
 {
     var decoder = new DecoderRow { Order = 1, Device = Device("Decoder A", "Decoder A", "Decoder"), OutputName = "Decoder A", Width = 1920, Height = 1080 };
     var encoder = new EncoderRow { Order = 1, Device = Device("Encoder A", "Encoder A", "Encoder"), ArenaSourceName = "Encoder A (Main)" };
-    var plan = new ConfigurationPlan("Test", 3840, 2160, 50, new[] { decoder }, new[] { encoder }, "Test Outputs", ".", ".");
+    var plan = new ConfigurationPlan("Test", 3840, 2160, 50, 20, false, true, 5, new[] { decoder }, new[] { encoder }, "Test Outputs", ".", ".");
     var document = new AdvancedOutputPresetGenerator().Generate(plan, new ArenaProduct("Arena", 7, 27, 1, 15990));
     Assert(document.Root?.Name.LocalName == "XmlState", "loadable Arena preset wrapper");
     Assert(document.Root?.Element("ScreenSetup") is not null, "wrapped ScreenSetup");
@@ -85,7 +87,27 @@ static void TestPreset()
     Assert(decoderScreen.Descendants("OutputRect").Single().Elements("v").ElementAt(2).Attribute("x")?.Value == "1920", "decoder output width");
 }
 
-static void TestColumnCount() => Assert(ArenaConfigurationOrchestrator.TotalColumnCount == 20, "composition is fixed at 20 columns");
+static void TestConfigurationOptions()
+{
+    var decoder = new DecoderRow { Order = 1, Device = Device("Decoder A", "Decoder A", "Decoder"), OutputName = "Decoder A", Width = 1920, Height = 1080 };
+    var encoders = new[]
+    {
+        new EncoderRow { Order = 1, Device = Device("Encoder A", "Encoder A", "Encoder"), ArenaSourceName = "Encoder A" },
+        new EncoderRow { Order = 2, Device = Device("Encoder B", "Encoder B", "Encoder"), ArenaSourceName = "Encoder B" }
+    };
+    var automatic = new ConfigurationPlan("Test", 5120, 2880, 60, 20, false, true, 5, new[] { decoder }, encoders, "Outputs", ".", ".");
+    ArenaConfigurationOrchestrator.ValidatePlan(automatic);
+    Assert(ArenaConfigurationOrchestrator.DefaultColumnCount == 20, "default column count");
+    Assert(ArenaConfigurationOrchestrator.MinimumColumnCount == 5 && ArenaConfigurationOrchestrator.MaximumColumnCount == 50, "column range");
+    Assert(ArenaConfigurationOrchestrator.GetMinimumColumnCountForPlacement(5, encoders.Length, true) == 7, "dynamic source and router minimum");
+    Assert(ArenaConfigurationOrchestrator.GetMinimumColumnCountForPlacement(5, encoders.Length, false) == 5, "manual placement restores minimum");
+    Assert(ArenaConfigurationOrchestrator.GetSourceColumnIndices(automatic).SequenceEqual(new[] { 4, 5 }), "1-based column 5 source placement");
+    Assert(ArenaConfigurationOrchestrator.GetRouterColumnIndex(automatic) == 6, "router follows placed sources in column 7");
+
+    var manual = automatic with { AutoPlaceNdiSources = false };
+    Assert(ArenaConfigurationOrchestrator.GetSourceColumnIndices(manual).Count == 0, "manual placement leaves source slots empty");
+    Assert(ArenaConfigurationOrchestrator.GetRouterColumnIndex(manual) == 0, "manual placement keeps router in column 1");
+}
 
 static void TestActiveAdvancedOutput()
 {
@@ -95,7 +117,7 @@ static void TestActiveAdvancedOutput()
     {
         var decoder = new DecoderRow { Order = 1, Device = Device("Decoder A", "Decoder A", "Decoder"), OutputName = "Decoder A", Width = 1920, Height = 1080 };
         var encoder = new EncoderRow { Order = 1, Device = Device("Encoder A", "Encoder A", "Encoder"), ArenaSourceName = "Encoder A (Main)" };
-        var plan = new ConfigurationPlan("Test", 3840, 2160, 50, new[] { decoder }, new[] { encoder }, "Test Outputs", directory, directory);
+        var plan = new ConfigurationPlan("Test", 3840, 2160, 50, 20, false, true, 5, new[] { decoder }, new[] { encoder }, "Test Outputs", directory, directory);
         var preset = new AdvancedOutputPresetGenerator().Generate(plan, new ArenaProduct("Arena", 7, 27, 1, 15990));
         var presetFile = Path.Combine(directory, "preset.xml");
         preset.Save(presetFile);
@@ -122,6 +144,42 @@ static void TestFrameRatePatch()
         Assert(document.Descendants("ParamRange").Single(e => (string?)e.Attribute("name") == "FrameRate").Attribute("value")?.Value == "50", "50 fps inserted");
     }
     finally { if (File.Exists(path)) File.Delete(path); }
+}
+
+static void TestCollapsedLayerState()
+{
+    var path = Path.Combine(Path.GetTempPath(), $"resolume-layers-{Guid.NewGuid():N}.avc");
+    try
+    {
+        File.WriteAllText(path, "<Composition><Layer><Params><Param name=\"Name\" value=\"Holding\"/></Params><LayerView foldedControl=\"0\"/></Layer><Layer><Params><Param name=\"Name\" value=\"Secondary\"/></Params><LayerView foldedControl=\"0\"/></Layer><Layer><Params><Param name=\"Name\" value=\"Primary\"/></Params><LayerView foldedControl=\"1\"/></Layer></Composition>");
+        ArenaConfigurationOrchestrator.SetCollapsedLayerStates(path);
+        var layers = XDocument.Load(path).Root!.Elements("Layer").ToDictionary(
+            layer => layer.Descendants("Param").Single().Attribute("value")!.Value,
+            layer => layer.Element("LayerView")!.Attribute("foldedControl")!.Value);
+        Assert(layers["Holding"] == "1" && layers["Secondary"] == "1", "Holding and Secondary collapsed");
+        Assert(layers["Primary"] == "0", "Primary expanded");
+    }
+    finally { if (File.Exists(path)) File.Delete(path); }
+}
+
+static void TestNdiCompositionSharingPreference()
+{
+    var directory = Path.Combine(Path.GetTempPath(), $"resolume-simple-output-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(directory);
+    var path = Path.Combine(directory, "SimpleOutput.xml");
+    try
+    {
+        File.WriteAllText(path, "<SimpleSetup advancedModeEnabled=\"1\"><Outputs/></SimpleSetup>");
+        var service = new SimpleOutputConfigurationService();
+        service.ApplyNdiCompositionSharingAsync(path, true, 7680, 4320, CancellationToken.None).GetAwaiter().GetResult();
+        Assert(SimpleOutputConfigurationService.PreferenceMatches(path, true), "NDI preference enabled");
+        var device = XDocument.Load(path).Descendants("OutputDeviceNDI").Single();
+        Assert((string?)device.Attribute("name") == "Composition", "composition output name");
+        Assert((string?)device.Attribute("width") == "7680" && (string?)device.Attribute("height") == "4320", "composition output dimensions");
+        service.ApplyNdiCompositionSharingAsync(path, false, 7680, 4320, CancellationToken.None).GetAwaiter().GetResult();
+        Assert(SimpleOutputConfigurationService.PreferenceMatches(path, false), "NDI preference disabled");
+    }
+    finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
 }
 
 static void TestVideoRouterInputPatch()
