@@ -162,6 +162,7 @@
         <StackPanel Grid.Row="1" VerticalAlignment="Center">
           <TextBlock x:Name="ValidationText" Text="Waiting for discovery." FontWeight="SemiBold"/>
           <TextBlock Text="Secondary and Holding layers will be collapsed when the workspace reloads." Foreground="#8E999B" FontSize="11" Margin="0,2,0,0"/>
+          <TextBlock Text="© 2026 John Lightfoot · Proprietary software · Free for non-commercial use" Foreground="#717B7D" FontSize="10" Margin="0,2,0,0"/>
         </StackPanel>
         <Button x:Name="ConfigureButton" Grid.Row="1" Grid.Column="1" Content="CONFIGURE ARENA" Click="ConfigureButton_OnClick" IsEnabled="False" Padding="24,11"/>
       </Grid>

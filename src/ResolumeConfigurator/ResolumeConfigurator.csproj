@@ -11,10 +11,15 @@
     <ApplicationIcon>Assets\app-icon.ico</ApplicationIcon>
     <Product>Resolume Arena Configurator</Product>
     <Description>Build Resolume Arena compositions and Advanced Output routes from NDI Job Configurator jobs.</Description>
-    <Authors>Resolume Arena Configurator</Authors>
-    <Version>0.3.2</Version>
+    <Authors>John Lightfoot</Authors>
+    <Company>John Lightfoot</Company>
+    <Copyright>Copyright © 2026 John Lightfoot. All rights reserved.</Copyright>
+    <PackageLicenseFile>LICENSE</PackageLicenseFile>
+    <PackageRequireLicenseAcceptance>true</PackageRequireLicenseAcceptance>
+    <Version>0.3.3</Version>
   </PropertyGroup>
   <ItemGroup>
     <Resource Include="Assets\app-icon.png" />
+    <None Include="..\..\LICENSE" Link="LICENSE" Pack="true" PackagePath="" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

@@ -61,3 +61,9 @@ Arena 7.27 can leave `POST /composition/new`, `/composition/save`, `/composition
 Arena also does not serialize the Video Router's live `Resize = Fit` choice. The configurator therefore restores Fit after the composition is patched to the selected frame rate and reloaded.
 
 Decoder resolutions not reported by NDI Job Configurator appear as editable `1920 × 1080` fallbacks and are marked **Review**.
+
+## Licence
+
+Copyright © 2026 John Lightfoot. All rights reserved.
+
+This is proprietary software made available free of charge for non-commercial use. Commercial use requires a separate written licence from John Lightfoot. See [LICENSE](LICENSE) for the complete terms.
