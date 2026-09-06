@@ -6,14 +6,14 @@ namespace ResolumeConfigurator.Services;
 public sealed class PostRestartWorker
 {
     public async Task<IReadOnlyList<DecoderPresetResult>> RunAsync(string expectedJobName, CancellationToken ct,
-        PostRestartComposition? restoration = null)
+        PostRestartComposition? restoration = null, string? configuratorUrl = null, JobIdentity? expectedJob = null)
     {
         // This is a fresh process launched immediately after replacement Arena.
         // Give Arena a full 15 seconds to load Advanced Output and publish its
         // NDI senders before the Kiloview discovery requests begin.
         await Task.Delay(TimeSpan.FromSeconds(15), ct).ConfigureAwait(false);
 
-        var snapshot = await new NdiJobConfiguratorReader().ReadAsync(ct).ConfigureAwait(false);
+        var snapshot = await JobRevisionGuard.RefreshAsync(configuratorUrl, expectedJob, ct).ConfigureAwait(false);
         if (!snapshot.JobName.Trim().Equals(expectedJobName.Trim(), StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException($"NDI Job Configurator changed from '{expectedJobName}' to '{snapshot.JobName}' during Arena restart.");
 
@@ -38,7 +38,9 @@ public sealed class PostRestartWorker
         if (restoration is not null)
             await RestoreCompositionAsync(expectedJobName, decoders.Select(decoder => decoder.OutputName).ToArray(), restoration, ct).ConfigureAwait(false);
 
-        return await new KiloviewDecoderPresetService().ConfigureAsync(decoders, null, ct).ConfigureAwait(false);
+        await JobRevisionGuard.RefreshAsync(configuratorUrl, expectedJob, ct).ConfigureAwait(false);
+        return await new KiloviewDecoderPresetService().ConfigureAsync(decoders, null, ct,
+            async token => { await JobRevisionGuard.RefreshAsync(configuratorUrl, expectedJob, token).ConfigureAwait(false); }).ConfigureAwait(false);
     }
 
     public async Task RestoreCompositionAsync(string expectedJobName, IReadOnlyList<string> decoderNames,

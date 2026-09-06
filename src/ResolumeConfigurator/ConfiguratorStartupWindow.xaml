@@ -1,0 +1,32 @@
+<Window x:Class="ResolumeConfigurator.ConfiguratorStartupWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Connect to NDI Job Configurator" Width="760" Height="490" MinWidth="650" MinHeight="420"
+        WindowStartupLocation="CenterScreen" Background="{StaticResource AppBackground}"
+        FontFamily="Segoe UI" Icon="Assets/app-icon.png">
+  <Grid Margin="28">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/>
+    </Grid.RowDefinitions>
+    <StackPanel>
+      <TextBlock Text="RESOLUME ARENA CONFIGURATOR" Foreground="{StaticResource AccentBrush}" FontSize="11" FontWeight="SemiBold"/>
+      <TextBlock x:Name="HeadingText" Text="Finding NDI Job Configurator" FontSize="25" FontWeight="SemiBold" Margin="0,8,0,0"/>
+      <TextBlock x:Name="StatusText" Text="Checking this PC, then searching the network for available jobs…"
+                 Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,10,0,0"/>
+    </StackPanel>
+    <ProgressBar x:Name="DiscoveryProgress" Grid.Row="1" Height="4" Margin="0,20,0,18" IsIndeterminate="True" Foreground="{StaticResource AccentBrush}"/>
+    <DataGrid x:Name="InstancesGrid" Grid.Row="2" Visibility="Collapsed" IsReadOnly="True" SelectionMode="Single"
+              SelectionUnit="FullRow" SelectionChanged="InstancesGrid_OnSelectionChanged" AutomationProperties.Name="Available NDI Job Configurators">
+      <DataGrid.Columns>
+        <DataGridTextColumn Header="JOB" Binding="{Binding JobName}" Width="*"/>
+        <DataGridTextColumn Header="ADDRESS" Binding="{Binding BaseAddress}" Width="2*"/>
+        <DataGridTextColumn Header="DEVICES" Binding="{Binding DeviceSummary}" Width="110"/>
+      </DataGrid.Columns>
+    </DataGrid>
+    <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,22,0,0">
+      <Button x:Name="ExitButton" Content="Cancel" Style="{StaticResource SecondaryButton}" IsCancel="True" Click="ExitButton_OnClick"/>
+      <Button x:Name="ContinueButton" Content="Continue" Margin="12,0,0,0" MinWidth="115" Visibility="Collapsed"
+              IsEnabled="False" IsDefault="True" Click="ContinueButton_OnClick"/>
+    </StackPanel>
+  </Grid>
+</Window>

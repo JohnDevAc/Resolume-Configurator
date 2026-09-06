@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net.Http;
 using Microsoft.Win32;
 
 namespace ResolumeConfigurator.Services;
@@ -27,10 +28,30 @@ public sealed class ArenaStartupService
         }) ?? throw new InvalidOperationException("Windows did not start Resolume Arena.");
         launchedProcess.Dispose();
 
-        // Arena needs time to restore its composition, load plug-ins and bind the
-        // REST webserver before the main discovery pass begins.
-        await Task.Delay(TimeSpan.FromSeconds(15), ct).ConfigureAwait(false);
-        return new ArenaStartupResult(true, executable);
+        using var api = new ResolumeApiClient(timeout: TimeSpan.FromMilliseconds(750));
+        var ready = await WaitForWebserverAsync(async token =>
+        {
+            try { return (await api.GetProductAsync(token).ConfigureAwait(false)).Name.Equals("Arena", StringComparison.OrdinalIgnoreCase); }
+            catch (Exception ex) when (!token.IsCancellationRequested && ex is HttpRequestException or OperationCanceledException or System.Text.Json.JsonException or InvalidDataException) { return false; }
+        }, TimeSpan.FromSeconds(15), TimeSpan.FromMilliseconds(250), ct).ConfigureAwait(false);
+        return new ArenaStartupResult(true, executable, ready);
+    }
+
+    internal static async Task<bool> WaitForWebserverAsync(Func<CancellationToken, Task<bool>> probe,
+        TimeSpan timeout, TimeSpan interval, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(timeout);
+        try
+        {
+            while (true)
+            {
+                if (await probe(deadline.Token).ConfigureAwait(false)) return true;
+                await Task.Delay(interval, deadline.Token).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return false; }
     }
 
     private static string? ResolveExecutable()
@@ -70,4 +91,4 @@ public sealed class ArenaStartupService
     }
 }
 
-public sealed record ArenaStartupResult(bool Launched, string? ExecutablePath);
+public sealed record ArenaStartupResult(bool Launched, string? ExecutablePath, bool WebserverReady = true);

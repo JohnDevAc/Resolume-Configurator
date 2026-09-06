@@ -3,6 +3,19 @@ using System.Xml.Linq;
 using ResolumeConfigurator.Models;
 using ResolumeConfigurator.Services;
 
+if (args.Length == 5 && args[0] == "--verify-job-contract")
+{
+    var snapshot = await new NdiJobConfiguratorReader(args[1]).ReadAsync(CancellationToken.None);
+    JobRevisionGuard.Validate(new(args[2], args[3], args[4]), snapshot);
+    if (snapshot.JobName != "Contract Fixture" || snapshot.DiscoveryServer != "192.0.2.5")
+        throw new InvalidOperationException("The cross-application fixture did not retain its job/discovery contract.");
+    Console.WriteLine("PASS Resolume consumed the real Job Configurator HTTP identity and revision");
+    return 0;
+}
+
+if (args.Contains("--startup-preview", StringComparer.OrdinalIgnoreCase))
+    return StartupDiscoveryTests.Preview(args.Last());
+
 if (args.Contains("--inspect-fleet", StringComparer.OrdinalIgnoreCase))
     return await LiveIntegrationChecks.InspectFleetAsync(args);
 
@@ -69,8 +82,15 @@ var tests = new (string Name, Action Test)[]
     ("restart launch arguments", RegressionTests.RestartLaunchArguments),
     ("subnet discovery", RegressionTests.SubnetDiscovery),
     ("job credential selection", RegressionTests.JobCredentialSelection),
+    ("job revision and local NDI readiness", RegressionTests.InteropReadiness),
     ("post-restart clip restoration", RegressionTests.RestartClipRestoration),
     ("stale Arena composition detection", RegressionTests.StaleArenaComposition),
+    ("local configurator startup", () => StartupDiscoveryTests.LocalInstanceAsync().GetAwaiter().GetResult()),
+    ("multiple network configurators", () => StartupDiscoveryTests.AllNetworkInstancesAsync().GetAwaiter().GetResult()),
+    ("discovery deadline and cancellation", () => StartupDiscoveryTests.DiscoveryDeadlineAsync().GetAwaiter().GetResult()),
+    ("selected configurator persistence", () => StartupDiscoveryTests.SelectedEndpointAsync().GetAwaiter().GetResult()),
+    ("Arena readiness wait", () => StartupDiscoveryTests.ArenaReadinessAsync().GetAwaiter().GetResult()),
+    ("prepared source matching", StartupDiscoveryTests.PreparedSourceMatching),
     ("configuration preflight", RegressionTests.ConfigurationPreflight),
     ("WPF validation and busy state", WpfRegressionTests.Run),
     ("Arena source URL", TestSourceUrl),

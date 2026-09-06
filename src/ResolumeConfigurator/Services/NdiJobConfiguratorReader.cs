@@ -1,6 +1,5 @@
 using System.Net;
 using System.Net.Http;
-using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Text.Json;
 using ResolumeConfigurator.Models;
@@ -11,6 +10,13 @@ public sealed class NdiJobConfiguratorReader
 {
     private const int Port = 8091;
     private static readonly HttpClient ApiClient = new() { Timeout = Timeout.InfiniteTimeSpan };
+    private readonly string? _selectedAddress;
+
+    public NdiJobConfiguratorReader(string? selectedAddress = null)
+    {
+        _selectedAddress = selectedAddress is null ? null : NormalizeBaseAddress(selectedAddress)
+            ?? throw new ArgumentException("The selected configurator address must be an HTTP or HTTPS base URL.", nameof(selectedAddress));
+    }
 
     public string ResolveStatePath()
     {
@@ -25,24 +31,26 @@ public sealed class NdiJobConfiguratorReader
     public async Task<JobSnapshot> ReadAsync(CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var configuredUrl = Environment.GetEnvironmentVariable("NDI_JOB_CONFIGURATOR_URL");
-        var candidates = new List<string>();
-        if (!string.IsNullOrWhiteSpace(configuredUrl)) candidates.Add(configuredUrl);
-        candidates.Add($"http://127.0.0.1:{Port}");
-
-        foreach (var candidate in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
+        var address = _selectedAddress;
+        if (address is null)
         {
-            var snapshot = await TryReadApiAsync(candidate, cancellationToken).ConfigureAwait(false);
-            if (snapshot is not null) return await MergeLocalCredentialsAsync(snapshot, cancellationToken).ConfigureAwait(false);
+            var discovery = await new NdiJobConfiguratorDiscovery().DiscoverAsync(cancellationToken).ConfigureAwait(false);
+            if (discovery.LocalInstance is not null) address = discovery.LocalInstance.BaseAddress;
+            else if (discovery.NetworkInstances.Count == 1) address = discovery.NetworkInstances[0].BaseAddress;
+            else if (discovery.NetworkInstances.Count > 1)
+                throw new InvalidOperationException("Multiple NDI Job Configurators were found. Open the application and select one before continuing.");
+            else throw new HttpRequestException($"No NDI Job Configurator was found on TCP {Port}.");
         }
-
-        var discovered = await DiscoverOnLanAsync(cancellationToken).ConfigureAwait(false);
-        if (discovered is not null) return await MergeLocalCredentialsAsync(discovered, cancellationToken).ConfigureAwait(false);
-
-        var path = ResolveStatePath();
-        return await ReadLocalSnapshotAsync(path, cancellationToken).ConfigureAwait(false)
-            ?? throw new FileNotFoundException($"NDI Job Configurator was not found on TCP {Port} or in its local state folder.", path);
+        // Never rediscover or use cached job data when the selected server goes offline.
+        var snapshot = await TryReadApiAsync(address, cancellationToken).ConfigureAwait(false)
+            ?? throw new HttpRequestException($"The selected NDI Job Configurator at {address} is unavailable. Check its connection and try again.");
+        return await MergeLocalCredentialsAsync(snapshot, cancellationToken).ConfigureAwait(false);
     }
+
+    internal Task<JobSnapshot> ReadInitialAsync(JobSnapshot? discoveredSnapshot, CancellationToken ct = default) =>
+        discoveredSnapshot is not null && discoveredSnapshot.Source.Equals(_selectedAddress, StringComparison.OrdinalIgnoreCase)
+        && DateTimeOffset.Now - discoveredSnapshot.ReadAt is var age && age >= TimeSpan.Zero && age < TimeSpan.FromSeconds(5)
+            ? MergeLocalCredentialsAsync(discoveredSnapshot, ct) : ReadAsync(ct);
 
     internal static async Task<JobSnapshot?> ReadLocalSnapshotAsync(string path, CancellationToken cancellationToken)
     {
@@ -73,7 +81,13 @@ public sealed class NdiJobConfiguratorReader
                     includeCredentials ? ReadCredentials(item) : null));
             }
         }
-        return new JobSnapshot(jobName, source, DateTimeOffset.Now, devices);
+        var serverId = GetString(root, "serverId");
+        var jobId = GetString(root, "jobId");
+        var revision = GetString(root, "jobRevision");
+        var identity = Guid.TryParse(serverId, out var serverGuid) && serverGuid != Guid.Empty
+            && !string.IsNullOrWhiteSpace(jobId) && !string.IsNullOrWhiteSpace(revision)
+                ? new JobIdentity(serverId!, jobId, revision) : null;
+        return new JobSnapshot(jobName, source, DateTimeOffset.Now, devices, identity, GetString(root, "lastJob", "ndiDiscoveryServerIp"));
     }
 
     private async Task<JobSnapshot> MergeLocalCredentialsAsync(JobSnapshot snapshot, CancellationToken cancellationToken)
@@ -87,20 +101,17 @@ public sealed class NdiJobConfiguratorReader
     {
         // NDI Job Configurator provisions onboarded Kiloviews with its job
         // credentials. A state file from a previous job must not override them.
-        var localDevices = local is not null && local.JobName.Equals(snapshot.JobName, StringComparison.Ordinal)
+        var localDevices = local is not null && snapshot.Identity is not null && local.Identity == snapshot.Identity
+            && local.JobName.Equals(snapshot.JobName, StringComparison.Ordinal)
             ? local.Devices : [];
         var byId = localDevices.Where(device => !string.IsNullOrWhiteSpace(device.Id))
             .GroupBy(device => device.Id, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(group => group.Key, group => group.First().Credentials, StringComparer.OrdinalIgnoreCase);
-        var byIp = localDevices.Where(device => !string.IsNullOrWhiteSpace(device.IpAddress))
-            .GroupBy(device => device.IpAddress, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.First().Credentials, StringComparer.OrdinalIgnoreCase);
 
         var merged = snapshot.Devices.Select(device =>
         {
             DeviceCredentials? credentials = null;
             if (!string.IsNullOrWhiteSpace(device.Id)) byId.TryGetValue(device.Id, out credentials);
-            if (credentials is null && !string.IsNullOrWhiteSpace(device.IpAddress)) byIp.TryGetValue(device.IpAddress, out credentials);
             if (credentials is null && device.IsOnboarded && device.Role.Equals("Decoder", StringComparison.OrdinalIgnoreCase)
                 && (device.Family.Equals("N6", StringComparison.OrdinalIgnoreCase) || device.Family.Equals("N60", StringComparison.OrdinalIgnoreCase))
                 && !string.IsNullOrWhiteSpace(snapshot.JobName))
@@ -123,8 +134,8 @@ public sealed class NdiJobConfiguratorReader
     internal static async Task<JobSnapshot?> TryReadApiAsync(string address, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var root = address.TrimEnd('/');
-        if (!Uri.TryCreate(root, UriKind.Absolute, out var baseUri) || baseUri.Scheme is not ("http" or "https")) return null;
+        var root = NormalizeBaseAddress(address);
+        if (root is null) return null;
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromMilliseconds(850));
         var apiBaseUri = new Uri(root + "/");
@@ -141,49 +152,15 @@ public sealed class NdiJobConfiguratorReader
             if (!stateResponse.IsSuccessStatusCode) return null;
             using var state = JsonDocument.Parse(await stateResponse.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false));
             if (!IsSnapshot(state.RootElement)) return null;
-            return ParseSnapshot(state.RootElement, baseUri.GetLeftPart(UriPartial.Authority));
+            return ParseSnapshot(state.RootElement, root);
         }
         catch (Exception ex) when (!cancellationToken.IsCancellationRequested && (ex is HttpRequestException or OperationCanceledException or JsonException)) { return null; }
     }
 
-    private static async Task<JobSnapshot?> DiscoverOnLanAsync(CancellationToken cancellationToken)
-    {
-        var localAddresses = NetworkInterface.GetAllNetworkInterfaces()
-            .Where(n => n.OperationalStatus == OperationalStatus.Up && n.NetworkInterfaceType is not NetworkInterfaceType.Loopback)
-            .SelectMany(n => n.GetIPProperties().UnicastAddresses)
-            .Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(a.Address))
-            .Select(a => (a.Address, a.PrefixLength))
-            .Distinct()
-            .OrderByDescending(a => a.PrefixLength)
-            .ToArray();
-
-        // Probe nearby addresses first, then the rest of each actual subnet.
-        // Keep enumeration lazy: a /16 must not allocate 65,534 tasks or URLs.
-        var hosts = localAddresses
-            .SelectMany(a => EnumerateSubnetHosts(a.Address, Math.Max(24, a.PrefixLength)))
-            .Concat(localAddresses.SelectMany(a => EnumerateSubnetHosts(a.Address, a.PrefixLength)))
-            .Distinct()
-            .Select(address => $"http://{address}:{Port}");
-        if (localAddresses.Length == 0) return null;
-
-        using var found = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        // Discovery is best effort; unreachable wide/VPN subnets must not hold
-        // up the local state fallback indefinitely. An explicit URL is tried first.
-        found.CancelAfter(TimeSpan.FromSeconds(15));
-        JobSnapshot? result = null;
-        try
-        {
-            await Parallel.ForEachAsync(hosts, new ParallelOptions { MaxDegreeOfParallelism = 48, CancellationToken = found.Token }, async (host, token) =>
-            {
-                var candidate = await TryReadApiAsync(host, token).ConfigureAwait(false);
-                if (candidate is null) return;
-                if (Interlocked.CompareExchange(ref result, candidate, null) is null) found.Cancel();
-            }).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { }
-        cancellationToken.ThrowIfCancellationRequested();
-        return result;
-    }
+    internal static string? NormalizeBaseAddress(string address) =>
+        Uri.TryCreate(address.Trim(), UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https"
+        && string.IsNullOrEmpty(uri.Query) && string.IsNullOrEmpty(uri.Fragment) && string.IsNullOrEmpty(uri.UserInfo)
+            ? uri.AbsoluteUri.TrimEnd('/') : null;
 
     internal static IEnumerable<IPAddress> EnumerateSubnetHosts(IPAddress address, int prefixLength)
     {

@@ -1,5 +1,7 @@
 # Resolume Arena Configurator
 
+See [Job Configurator interoperability](INTEROPERABILITY.md) for required job identity, local NDI readiness and remote credential ownership.
+
 A native Windows companion app that turns the current NDI Job Configurator fleet into a Resolume Arena workspace.
 
 Download the Windows installer or portable package from the [latest release](https://github.com/JohnDevAc/Resolume-Configurator/releases/latest).
@@ -23,7 +25,8 @@ Download the Windows installer or portable package from the [latest release](htt
 
 - Windows 10 or 11.
 - Resolume Arena 7 with **Preferences → Webserver** enabled on port `8080`.
-- NDI Job Configurator available on TCP `8091`. The app checks localhost, then discovers it across the actual local IPv4 subnet prefixes using `/api/health`, prioritizing nearby addresses. Discovery has a 15-second budget before local `state.json` fallback. Use `NDI_JOB_CONFIGURATOR_URL` for a known remote server.
+- A running NDI Job Configurator available on TCP `8091`. On its hosting PC, the app connects locally. On other PCs, it scans the active local IPv4 subnets and lists the instances found, with job names, addresses, and device counts. Select an instance and click **Continue** before the main application opens, even if only one instance is found.
+- The network scan prioritizes nearby addresses and has a 15-second budget. `NDI_JOB_CONFIGURATOR_URL` adds a known remote server to the scan, including servers outside the local subnets. If nothing is found, the app displays a warning and exits when **Close application** is clicked. Saved state cannot substitute for a running configurator.
 - Encoder NDI sources visible in Arena before configuration.
 - Decoder credentials saved by NDI Job Configurator, or its standard onboarding credentials for the current job (used locally and never displayed or logged). Local credentials from a different job are ignored. Custom credentials must be available in current local state.
 
@@ -45,7 +48,7 @@ Run the automated regression suite (a console executable, not a `dotnet test` pr
 dotnet run --project .\tests\ResolumeConfigurator.Tests\ResolumeConfigurator.Tests.csproj -c Release
 ```
 
-The suite uses temporary files, local test HTTP servers, and an unshown WPF window. It does not modify the running Arena composition or physical decoders. See [REVIEW.md](REVIEW.md) for the latest review and live network test results.
+The suite uses temporary files, local test HTTP servers, an unshown main window, and briefly displayed startup dialogs with simulated discovery results. Production startup is disabled in the test application. It does not modify the running Arena composition or physical decoders. See [REVIEW.md](REVIEW.md) for the latest review and live network test results.
 
 Install the published test build for the current Windows user:
 
@@ -67,6 +70,10 @@ This publishes the self-contained `win-x64` app and creates a versioned Setup ex
 The generated installer is not code-signed. Windows SmartScreen may therefore show an unrecognized-app warning until the executable is signed with a trusted code-signing certificate.
 
 ## Safety and Arena behavior
+
+The selected configurator remains fixed for refreshes, configuration, and the post-restart helper. A lost connection is reported instead of switching to another job or using cached job data. Local state is used only to supplement credentials for the matching current job.
+
+At startup, Arena is launched only after a configurator has been found and selected. Its webserver is checked until ready, up to 15 seconds, instead of always waiting the full interval. A fresh discovery snapshot is reused for the first refresh; independent job and Arena reads run concurrently, and source matching prepares the discovered source names once per refresh.
 
 When Configure is pressed, the app verifies decoder login and preset capacity, then saves the open composition under `Compositions\Configurator Backups`. It compares the saved layer, group, and clip identities with Arena's API. Arena 7.27 can retain stale API objects after New/Open; when this happens, the app restarts Arena with that backup and verifies synchronization before editing.
 

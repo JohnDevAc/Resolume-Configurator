@@ -37,11 +37,13 @@ public sealed class KiloviewDecoderPresetService
     public async Task<IReadOnlyList<DecoderPresetResult>> ConfigureAsync(
         IReadOnlyList<DecoderRow> decoders,
         IProgress<string>? progress,
-        CancellationToken ct)
+        CancellationToken ct,
+        Func<CancellationToken, Task>? validateJob = null)
     {
         var results = new List<DecoderPresetResult>();
         foreach (var decoder in decoders)
         {
+            if (validateJob is not null) await validateJob(ct);
             if (decoder.Device.Credentials is null)
                 throw new InvalidOperationException($"NDI Job Configurator has no saved credentials for decoder {decoder.OutputName} ({decoder.IpAddress}).");
 

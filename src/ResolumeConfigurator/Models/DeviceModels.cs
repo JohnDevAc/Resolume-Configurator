@@ -20,7 +20,9 @@ public sealed record JobDevice(
 
 public sealed record DecoderPresetResult(string DecoderName, string Family, int Slot, bool ReusedExistingSlot);
 
-public sealed record JobSnapshot(string JobName, string Source, DateTimeOffset ReadAt, IReadOnlyList<JobDevice> Devices);
+public sealed record JobIdentity(string ServerId, string JobId, string Revision);
+public sealed record JobSnapshot(string JobName, string Source, DateTimeOffset ReadAt, IReadOnlyList<JobDevice> Devices,
+    JobIdentity? Identity = null, string? DiscoveryServer = null);
 
 public abstract class ObservableRow : INotifyPropertyChanged
 {
@@ -103,7 +105,9 @@ public sealed record ConfigurationPlan(
     IReadOnlyList<EncoderRow> Encoders,
     string PresetName,
     string CompositionDirectory,
-    string PresetDirectory);
+    string PresetDirectory,
+    string? ConfiguratorUrl = null,
+    JobIdentity? ExpectedJob = null);
 
 public sealed record ConfigurationResult(
     string CompositionFile,

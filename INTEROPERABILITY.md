@@ -1,0 +1,16 @@
+# Job Configurator interoperability
+
+Resolume Configurator remains an independent Arena client. Job Configurator, KiloLink and NDI Discovery may run elsewhere. The Arena PC must participate in the intended job through its local PC Agent; it does not need local server components.
+
+Before changing Arena, the plan requires the selected Job Configurator's schema-1 server ID, job ID and revision. Old servers without that identity must be updated. Configuration is revalidated before mutation and around later phases; the restart helper carries the expected identity and checks it before restoration and each decoder. Same-name replacement, a different server or a changed device configuration requires reloading and reviewing the plan.
+
+Readiness verifies the local Agent endpoint, its selected NDI interface, send/receive groups and Discovery address. Repair drift with PC Agent rather than writing PC NDI settings from Resolume. No general internet gate is imposed on configured LAN operation or the self-contained installer.
+
+Local decoder credentials are used only for the exact selected server/job revision and device ID. Matching IP addresses or job names alone are insufficient. Without a verified local credential source, normal onboarded-device credentials follow the existing admin/job-name contract. Custom credentials on a remote server require a verified exact-identity source; decoder preflight fails clearly before Arena mutation when those credentials are unavailable. No general server credential export API is added.
+
+Arena composition backups remain under `Configurator Backups`. A failure after mutation can leave a partial configuration; inspect the operation log and restore the saved composition when required. Distributed revision checks do not make Arena and firmware writes a single atomic transaction.
+
+Ports: Job Configurator TCP 8091, local Agent TCP 8094, Discovery TCP 5959 and Arena TCP 8080. Keep these distinct on combined hosts.
+
+Run `dotnet run --project tests/ResolumeConfigurator.Tests/ResolumeConfigurator.Tests.csproj` for isolated validation, including identity, credentials, NDI readiness and restart arguments. The suite workspace's HTTP fixture can additionally exercise this reader against a real isolated Job Configurator process. Real Arena/NDI/device operation still needs controlled hardware acceptance.
+

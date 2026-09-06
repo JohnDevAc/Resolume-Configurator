@@ -1,6 +1,20 @@
 # Application review — 6 September 2026
 
-Reviewed and fixed the WPF interface, job discovery, source matching, Arena configuration and restart, XML generation, decoder preset selection, and packaging scripts. Expanded the regression suite from 12 to 27 tests and completed two successful full network runs, including automatic recovery from Arena's stale API state. The updated installer was built and installed on this PC.
+Reviewed and fixed the WPF interface, job discovery, source matching, Arena configuration and restart, XML generation, decoder preset selection, and packaging scripts. The original review expanded the regression suite from 12 to 27 tests and completed two successful full network runs, including automatic recovery from Arena's stale API state. That installer was built, installed, and published as v0.3.5. The subsequent startup and efficiency changes below expand coverage to 33 tests.
+
+## Startup selection and efficiency follow-up
+
+- A reachable localhost configurator proceeds directly. Otherwise startup collects network instances for up to 15 seconds and shows their job names, addresses, and device counts. A remote instance requires an explicit Continue, including when only one is found. The selected endpoint is rechecked before opening the main application.
+- No result or a discovery error presents an explanation and a Close application button. Acknowledging it exits before the main window or Arena startup. Closing during discovery cancels the scan.
+- Refresh, configuration, and the restart helper retain the selected endpoint. A lost connection cannot silently select another instance or fall back to a saved job. Local files only supplement credentials for the current matching job.
+- A selected discovery snapshot younger than five seconds is reused for the initial refresh, avoiding a duplicate health/state request pair. Older or mismatched snapshots are reread. Independent job and Arena reads run concurrently; product and NDI source reads also overlap.
+- Source names and IDs are normalized once per refresh and shared across encoder matches. Matching now chooses the best candidate in a linear pass, preserving deterministic alphabetical ties, instead of sorting candidates for each encoder.
+- Cold Arena startup polls for webserver readiness with a 15-second ceiling and finishes as soon as Arena responds. The post-configuration restart helper retains its existing NDI settling interval.
+- Discovery retains a shared HTTP client, lazy subnet enumeration, and at most 48 concurrent probes. It collects all responses within the scan budget rather than stopping at the first server.
+
+Verification: **33/33 regression tests passed**, including local/remote discovery, slow responders, URL deduplication, no-result and one-/two-instance dialogs, selection loss, cancellation, request deadlines, stale startup snapshots, selected endpoint persistence, and early Arena readiness. Modal UI tests use production resources with application startup disabled, preventing live discovery or Arena launch from the test dispatcher. The Release solution builds with warnings treated as errors (zero warnings/errors), and the self-contained Windows build is available in `artifacts/startup-review/win-x64`.
+
+Visual previews verified the two-instance chooser, disabled Continue before selection, and the no-result warning/exit. The current feature build also opened against the real **LivewireTest** configurator on localhost and displayed Arena **7.27.1**, all **3 decoders**, and the **matched encoder**. Remote multi-instance scenarios used simulated servers; a second physical configurator host was not available. These changes are local and are not included in the previously published v0.3.5 release.
 
 ## Fixed issues
 
@@ -25,10 +39,10 @@ The streaming timeout follows Microsoft's documented requirement to [time respon
 ## Optimizations
 
 - Discovery reuses one HTTP client and runs a bounded set of workers instead of allocating a task and client for every scanned host. The existing limit of 48 concurrent probes is retained; service continuations run independently of the WPF UI context.
-- Source identities are normalized once per match operation instead of repeatedly inside the candidate comparison loops.
+- Source identities are normalized once per refresh instead of repeatedly inside the candidate comparison loops or for each encoder.
 - Post-restart decoder resolution is parsed once per device instead of three times.
 - Refresh detaches row event handlers and clears stale counts and connection state.
-- LAN discovery uses actual adapter subnet prefixes, scans nearby addresses first, enumerates lazily, and imposes a 15-second overall budget before local fallback.
+- LAN discovery uses actual adapter subnet prefixes, scans nearby addresses first, enumerates lazily, and imposes a 15-second overall budget. The startup follow-up replaces local job fallback with an explicit connection requirement.
 
 These reduce redundant work; fleet-scale performance was not benchmarked.
 

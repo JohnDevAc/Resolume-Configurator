@@ -14,10 +14,11 @@ internal static class WpfRegressionTests
         Exception? failure = null;
         var thread = new Thread(() =>
         {
-            var app = new App();
+            var app = new App(runStartup: false);
             try
             {
                 app.InitializeComponent();
+                app.ShutdownMode = ShutdownMode.OnExplicitShutdown;
                 // Construct without showing: Loaded never fires, so no Arena process
                 // or job discovery is started by this UI regression test.
                 var window = new MainWindow();
@@ -44,6 +45,7 @@ internal static class WpfRegressionTests
                     "worker completion restores the controls");
                 RegressionTests.Assert(window.ConfigurationProgress.Value == 100, "worker success completes the progress bar");
                 window.Close();
+                StartupDiscoveryTests.RunWindows();
             }
             catch (Exception ex) { failure = ex; }
             finally { app.Shutdown(); }

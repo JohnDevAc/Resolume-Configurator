@@ -16,6 +16,8 @@ public sealed class ArenaConfigurationOrchestrator
         void Report(string message) { log.Add(message); progress?.Report(message); }
         using var api = new ResolumeApiClient();
         ValidatePlan(plan);
+        var job = await JobRevisionGuard.RefreshAsync(plan.ConfiguratorUrl, plan.ExpectedJob, ct);
+        await LocalNdiReadinessService.ValidateAsync(job, ct);
         var sourceColumnIndices = GetSourceColumnIndices(plan);
         var routerColumnIndex = GetRouterColumnIndex(plan);
         var product = await api.GetProductAsync(ct);
@@ -25,10 +27,12 @@ public sealed class ArenaConfigurationOrchestrator
         await new KiloviewDecoderPresetService().ValidateConnectionsAsync(plan.Decoders, ct);
         Report($"Verified login and preset capacity for all {plan.Decoders.Count} decoders.");
 
+        await JobRevisionGuard.RefreshAsync(plan.ConfiguratorUrl, plan.ExpectedJob, ct);
         Directory.CreateDirectory(plan.CompositionDirectory);
         var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss-fff");
         var groupNamesInBackToFrontOrder = plan.Decoders.Select(d => d.OutputName).Concat(new[] { "LED Wall", "Show" }).ToArray();
         var initial = await new ArenaCompositionSynchronizationService().EnsureCurrentAsync(api, plan.CompositionDirectory, progress, ct);
+        await JobRevisionGuard.RefreshAsync(plan.ConfiguratorUrl, plan.ExpectedJob, ct);
         ValidateInitialComposition(initial, groupNamesInBackToFrontOrder.Length);
         var targetColumnCount = Math.Max(plan.TotalColumnCount, initial.ColumnIds.Count);
         await api.UpdateCompositionAsync(plan.CompositionName, plan.CompositionWidth, plan.CompositionHeight, ct);
@@ -144,6 +148,7 @@ public sealed class ArenaConfigurationOrchestrator
         // overwriting. Preserve any previous same-named file, then save to the exact
         // job filename so the live composition also carries the job name.
         var safeCompositionName = ArenaPaths.SafeFileName(plan.CompositionName, "NDI Job");
+        await JobRevisionGuard.RefreshAsync(plan.ConfiguratorUrl, plan.ExpectedJob, ct);
         var compositionFile = Path.Combine(plan.CompositionDirectory, $"{safeCompositionName}.avc");
         if (File.Exists(compositionFile))
         {
@@ -207,6 +212,7 @@ public sealed class ArenaConfigurationOrchestrator
         Report($"Set {ndiClipIds.Count} decoder/Show NDI clips and {routerClipIds.Count} routers to Fit, enabled every decoder router, refreshed all NDI thumbnails, collapsed Secondary/Holding layers, and saved the routed {targetColumnCount}-column composition at {plan.FramesPerSecond} fps.");
 
         var generator = new AdvancedOutputPresetGenerator();
+        await JobRevisionGuard.RefreshAsync(plan.ConfiguratorUrl, plan.ExpectedJob, ct);
         var preset = generator.Generate(plan, product, groupIndices);
         var presetFile = await generator.SaveAsync(preset, plan, ct);
         Report($"Wrote Advanced Output preset {Path.GetFileName(presetFile)}.");
@@ -231,7 +237,7 @@ public sealed class ArenaConfigurationOrchestrator
         // the new Arena server is responding to other processes.
         api.Dispose();
         await new ArenaRestartService().RestartAsync(compositionFile, plan.CompositionName, progress, ct,
-            plan.SourceStartColumn, plan.AutoPlaceNdiSources ? plan.Encoders.Count : 0);
+            plan.SourceStartColumn, plan.AutoPlaceNdiSources ? plan.Encoders.Count : 0, plan.ConfiguratorUrl, plan.ExpectedJob);
         Report("Arena restart initiated. Decoder activation will report back in the main window.");
         return new ConfigurationResult(compositionFile, presetFile, null, log, []);
     }

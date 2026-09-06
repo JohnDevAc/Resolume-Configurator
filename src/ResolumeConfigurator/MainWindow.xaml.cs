@@ -11,7 +11,9 @@ namespace ResolumeConfigurator;
 
 public partial class MainWindow : Window
 {
-    private readonly NdiJobConfiguratorReader _jobReader = new();
+    private readonly NdiJobConfiguratorReader _jobReader;
+    private readonly string? _configuratorUrl;
+    private readonly JobSnapshot? _initialSnapshot;
     private JobSnapshot? _snapshot;
     private ArenaProduct? _product;
     private bool _busy;
@@ -32,8 +34,11 @@ public partial class MainWindow : Window
     ];
     public IReadOnlyList<int> FrameRates { get; } = [60, 50];
 
-    public MainWindow()
+    public MainWindow(string? configuratorUrl = null, JobSnapshot? initialSnapshot = null)
     {
+        _configuratorUrl = configuratorUrl;
+        _jobReader = new NdiJobConfiguratorReader(configuratorUrl);
+        _initialSnapshot = initialSnapshot;
         InitializeComponent();
         DataContext = this;
         WorkspaceResolutionComboBox.SelectedItem = WorkspaceResolutions.Single(option => option.Name == "4K");
@@ -69,8 +74,9 @@ public partial class MainWindow : Window
             var startup = await new ArenaStartupService().EnsureRunningAsync(CancellationToken.None);
             if (startup.Launched)
             {
-                ArenaStatusText.Text = "Arena: startup wait complete";
-                AppendLog("Arena was not running, so it was launched. Waited 15 seconds before discovery.");
+                ArenaStatusText.Text = startup.WebserverReady ? "Arena: webserver ready" : "Arena: webserver unavailable";
+                AppendLog(startup.WebserverReady ? "Launched Arena; its webserver is ready."
+                    : "Launched Arena, but its webserver has not responded. Enable Preferences > Webserver on port 8080.");
             }
         }
         catch (Exception ex)
@@ -80,14 +86,14 @@ public partial class MainWindow : Window
         }
 
         SetBusy(false);
-        await RefreshAsync();
+        await RefreshAsync(_initialSnapshot);
         ConfigurationProgress.IsIndeterminate = false;
         ConfigurationProgress.Value = 0;
         Topmost = false;
         Activate();
     }
 
-    private async Task RefreshAsync()
+    private async Task RefreshAsync(JobSnapshot? initialSnapshot = null)
     {
         if (_busy) return;
         SetBusy(true);
@@ -100,12 +106,16 @@ public partial class MainWindow : Window
         DecoderCountText.Text = EncoderCountText.Text = "0";
         EncoderMatchWarningText.Visibility = Visibility.Collapsed;
         _product = null;
+        using var api = new ResolumeApiClient();
         try
         {
-            _snapshot = await _jobReader.ReadAsync();
+            var jobTask = initialSnapshot is null ? _jobReader.ReadAsync() : _jobReader.ReadInitialAsync(initialSnapshot);
+            var arenaTask = ReadArenaAsync(api);
+            await Task.WhenAll(jobTask, arenaTask);
+            _snapshot = await jobTask;
             _compositionName = _snapshot.JobName;
             JobStatusText.Text = _snapshot.JobName;
-            JobStatusText.ToolTip = $"{_snapshot.Devices.Count} device{Plural(_snapshot.Devices.Count)} in the current NDI Configurator job";
+            JobStatusText.ToolTip = $"{_snapshot.Devices.Count} device{Plural(_snapshot.Devices.Count)} · {_snapshot.Source}";
 
             var decoderDevices = _snapshot.Devices.Where(d => d.IsOnboarded && d.Role.Equals("Decoder", StringComparison.OrdinalIgnoreCase)).ToArray();
             var encoderDevices = _snapshot.Devices.Where(d => d.IsOnboarded && d.Role.Equals("Encoder", StringComparison.OrdinalIgnoreCase)).ToArray();
@@ -121,22 +131,23 @@ public partial class MainWindow : Window
             for (var i = 0; i < encoderDevices.Length; i++)
                 Encoders.Add(new EncoderRow { Order = i + 1, Device = encoderDevices[i] });
 
-            using var api = new ResolumeApiClient();
-            try
+            var arena = await arenaTask;
+            if (arena.Product is not null)
             {
-                _product = await api.GetProductAsync();
-                var sources = await api.GetNdiSourcesAsync();
+                _product = arena.Product;
+                var sources = arena.Sources;
                 ArenaStatusText.Text = $"Arena: {_product.Major}.{_product.Minor}.{_product.Micro} online";
+                var matchSource = SourceMatcher.CreateMatcher(sources);
                 foreach (var encoder in Encoders)
                 {
-                    var match = SourceMatcher.BestMatch(encoder.Device, sources);
+                    var match = matchSource(encoder.Device);
                     encoder.ArenaSourceName = match?.Name ?? "";
                     encoder.ArenaSourceIdString = match?.IdString ?? "";
                     encoder.MatchStatus = match is null ? "Missing" : "Matched";
                 }
                 AppendLog($"Arena reported {sources.Count} live NDI source(s).");
             }
-            catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException)
+            else
             {
                 _product = null;
                 ArenaStatusText.Text = "Arena: webserver unavailable";
@@ -160,6 +171,21 @@ public partial class MainWindow : Window
             UpdatePlan();
         }
         finally { SetBusy(false); }
+    }
+
+    private static async Task<(ArenaProduct? Product, IReadOnlyList<ArenaSource> Sources)> ReadArenaAsync(ResolumeApiClient api)
+    {
+        try
+        {
+            var product = api.GetProductAsync();
+            var sources = api.GetNdiSourcesAsync();
+            await Task.WhenAll(product, sources);
+            return (await product, await sources);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or System.Text.Json.JsonException or InvalidDataException)
+        {
+            return (null, []);
+        }
     }
 
     private void Row_OnPropertyChanged(object? sender, PropertyChangedEventArgs e) => UpdatePlan();
@@ -229,7 +255,7 @@ public partial class MainWindow : Window
             AutoPlaceSourcesToggle.IsChecked == true,
             (int)SourceStartColumnSlider.Value,
             Decoders.ToArray(), Encoders.ToArray(),
-            _compositionName.Trim() + " - NDI Outputs", paths.Compositions, paths.AdvancedOutputPresets);
+            _compositionName.Trim() + " - NDI Outputs", paths.Compositions, paths.AdvancedOutputPresets, _configuratorUrl, _snapshot?.Identity);
     }
 
     private async void ConfigureButton_OnClick(object sender, RoutedEventArgs e)

@@ -1,11 +1,12 @@
 using System.Diagnostics;
+using ResolumeConfigurator.Models;
 
 namespace ResolumeConfigurator.Services;
 
 public sealed class ArenaRestartService
 {
     public async Task RestartAsync(string compositionFile, string expectedJobName, IProgress<string>? progress, CancellationToken ct,
-        int sourceStartColumn, int sourceCount)
+        int sourceStartColumn, int sourceCount, string? configuratorUrl = null, JobIdentity? expectedJob = null)
     {
         if (!File.Exists(compositionFile)) throw new FileNotFoundException("The saved job composition was not found before restart.", compositionFile);
         var companionPath = Environment.ProcessPath
@@ -13,7 +14,7 @@ public sealed class ArenaRestartService
         await RestartArenaAsync(compositionFile, ct).ConfigureAwait(false);
         progress?.Report("Restarted Arena after saving the composition and active Advanced Output XML.");
         using var worker = Process.Start(CreateWorkerStartInfo(companionPath, expectedJobName, Environment.ProcessId,
-            compositionFile, sourceStartColumn, sourceCount))
+            compositionFile, sourceStartColumn, sourceCount, configuratorUrl, expectedJob))
             ?? throw new InvalidOperationException("Windows did not start the post-restart activation worker.");
         progress?.Report("Launched Arena and handed decoder activation to a fresh helper process.");
     }
@@ -60,7 +61,7 @@ public sealed class ArenaRestartService
     }
 
     internal static ProcessStartInfo CreateWorkerStartInfo(string companionPath, string expectedJobName, int parentProcessId,
-        string compositionFile, int sourceStartColumn, int sourceCount)
+        string compositionFile, int sourceStartColumn, int sourceCount, string? configuratorUrl = null, JobIdentity? expectedJob = null)
     {
         var workerStartInfo = new ProcessStartInfo
         {
@@ -75,6 +76,13 @@ public sealed class ArenaRestartService
         workerStartInfo.ArgumentList.Add(compositionFile);
         workerStartInfo.ArgumentList.Add(sourceStartColumn.ToString(System.Globalization.CultureInfo.InvariantCulture));
         workerStartInfo.ArgumentList.Add(sourceCount.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        if (configuratorUrl is not null || expectedJob is not null) workerStartInfo.ArgumentList.Add(configuratorUrl ?? "");
+        if (expectedJob is not null)
+        {
+            workerStartInfo.ArgumentList.Add(expectedJob.ServerId);
+            workerStartInfo.ArgumentList.Add(expectedJob.JobId);
+            workerStartInfo.ArgumentList.Add(expectedJob.Revision);
+        }
         return workerStartInfo;
     }
 }

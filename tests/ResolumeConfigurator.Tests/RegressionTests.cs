@@ -7,6 +7,23 @@ using ResolumeConfigurator.Services;
 
 internal static class RegressionTests
 {
+    public static void InteropReadiness()
+    {
+        var identity = new JobIdentity(Guid.NewGuid().ToString(), "job-1", "revision-1");
+        var job = new JobSnapshot("Test", "Remote API", DateTimeOffset.Now, [], identity, "192.0.2.5");
+        JobRevisionGuard.Validate(identity, job);
+        ExpectInvalid(() => JobRevisionGuard.Validate(null, job), "legacy server must be updated before mutation");
+        foreach (var other in new[] { identity with { ServerId = Guid.NewGuid().ToString() }, identity with { JobId = "job-2" }, identity with { Revision = "revision-2" } })
+            ExpectInvalid(() => JobRevisionGuard.Validate(other, job), "server, same-name job replacement and configuration changes invalidate approval");
+        using var status = System.Text.Json.JsonDocument.Parse("""
+            {"endpointId":"test-endpoint","ndiConfiguration":{"preferredInterfaceConfigured":true,"sendGroups":["Test"],"receiveGroups":["Test"],"discoveryServer":"192.0.2.5"}}
+            """);
+        LocalNdiReadinessService.Validate(status.RootElement, "test-endpoint", job);
+        ExpectInvalid(() => LocalNdiReadinessService.Validate(status.RootElement, "other-endpoint", job), "wrong local identity must fail");
+        ExpectInvalid(() => LocalNdiReadinessService.Validate(status.RootElement, "test-endpoint", job with { JobName = "Other" }), "wrong groups must fail");
+        ExpectInvalid(() => LocalNdiReadinessService.Validate(status.RootElement, "test-endpoint", job with { DiscoveryServer = "192.0.2.6" }), "wrong discovery must fail");
+    }
+
     public static void StaleArenaComposition()
     {
         var saved = System.Xml.Linq.XDocument.Parse("""
@@ -148,6 +165,13 @@ internal static class RegressionTests
         Assert(arena.ArgumentList.SequenceEqual(new[] { compositionFile }), "Arena must reopen the saved job composition, including spaces in its path");
         var worker = ArenaRestartService.CreateWorkerStartInfo(@"C:\Programs\Configurator.exe", jobName, 1234, compositionFile, 5, 2);
         Assert(worker.ArgumentList.SequenceEqual(new[] { "--post-restart", jobName, "1234", compositionFile, "5", "2" }), "the worker must receive the original job, originating app, and source placement");
+        var selectedUrl = "http://192.0.2.2:8091/ndi";
+        var selectedWorker = ArenaRestartService.CreateWorkerStartInfo(@"C:\Programs\Configurator.exe", jobName, 1234, compositionFile, 5, 2, selectedUrl);
+        Assert(selectedWorker.ArgumentList.Last() == selectedUrl && selectedWorker.ArgumentList.Count == 7,
+            "the fresh helper must receive the user's selected server, including its base path");
+        var identity = new JobIdentity(Guid.NewGuid().ToString(), "job-1", "revision-1");
+        var guarded = ArenaRestartService.CreateWorkerStartInfo(@"C:\Programs\Configurator.exe", jobName, 1234, compositionFile, 5, 2, selectedUrl, identity);
+        Assert(guarded.ArgumentList.Skip(7).SequenceEqual(new[] { identity.ServerId, identity.JobId, identity.Revision }), "the restart helper lost its approved job identity");
     }
 
     public static void SubnetDiscovery()
@@ -163,10 +187,16 @@ internal static class RegressionTests
     public static void JobCredentialSelection()
     {
         var device = Device("Decoder", "Output") with { Role = "Decoder", Credentials = null };
-        var current = new JobSnapshot("Current job", "API", DateTimeOffset.Now, [device]);
+        var current = new JobSnapshot("Current job", "API", DateTimeOffset.Now, [device], new(Guid.NewGuid().ToString(), "job-id", "revision"));
         var saved = current with { Devices = [device with { Credentials = new("saved-user", "saved-password") }] };
         var credentials = NdiJobConfiguratorReader.MergeCredentials(current, saved).Devices.Single().Credentials;
         Assert(credentials == saved.Devices[0].Credentials, "matching local job credentials take precedence");
+        var unrelated = saved with { Identity = current.Identity! with { ServerId = Guid.NewGuid().ToString() } };
+        Assert(NdiJobConfiguratorReader.MergeCredentials(current, unrelated).Devices[0].Credentials != saved.Devices[0].Credentials,
+            "another server's credentials must never be used even when job names and IPs match");
+        unrelated = saved with { Devices = [saved.Devices[0] with { Id = "different-device-same-ip" }] };
+        Assert(NdiJobConfiguratorReader.MergeCredentials(current, unrelated).Devices[0].Credentials != saved.Devices[0].Credentials,
+            "IP address cannot substitute for exact device identity");
         credentials = NdiJobConfiguratorReader.MergeCredentials(current, saved with { JobName = "Previous job" }).Devices.Single().Credentials;
         Assert(credentials == new DeviceCredentials("admin", current.JobName), "stale job state must use the current onboarding contract instead of an old password");
         Assert(NdiJobConfiguratorReader.MergeCredentials(current with { Devices = [device with { IsOnboarded = false }] }, null).Devices[0].Credentials is null,
