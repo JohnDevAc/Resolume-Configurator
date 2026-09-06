@@ -1,5 +1,9 @@
 # Job Configurator interoperability
 
+## Additional QA corrections — 6 September 2026
+
+Local readiness validates the saved schema and endpoint/adapter identities, then requires the exact saved adapter to be up with the preferred IPv4 address and matching prefix. An identical IP on another adapter is insufficient. The live Agent response must match schema, endpoint, adapter, address and prefix before job/NDI readiness can permit writes.
+
 ## QA follow-up — 6 September 2026
 
 The restart worker checks local PC Agent/NDI readiness as well as the expected job identity. After waiting for Arena's saved composition to reopen, it revalidates before restoration writes. The API client also validates immediately before each mutating request, covering internal clip-loading waits during both initial configuration and restoration. Decoder configuration revalidates after source discovery and before each preset replacement/addition and activation request.

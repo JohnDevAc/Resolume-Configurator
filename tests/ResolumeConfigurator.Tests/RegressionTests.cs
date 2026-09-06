@@ -9,6 +9,21 @@ internal static class RegressionTests
 {
     public static void InteropReadiness()
     {
+        var local = new { schemaVersion = 1, endpointId = Guid.NewGuid().ToString(), adapterId = Guid.NewGuid().ToString(), address = "192.0.2.20", prefixLength = 24 };
+        var localJson = System.Text.Json.JsonSerializer.SerializeToElement(local);
+        var nic = new LocalNdiReadinessService.LocalAdapterAddress(local.adapterId, local.address, 24, true);
+        var selected = LocalNdiReadinessService.ValidateLocalState(localJson, [nic]);
+        LocalNdiReadinessService.ValidateStatusIdentity(localJson, selected);
+        foreach (var wrong in new[] { nic with { AdapterId = Guid.NewGuid().ToString() }, nic with { Ready = false }, nic with { Prefix = 25 } })
+            ExpectInvalid(() => LocalNdiReadinessService.ValidateLocalState(localJson, [wrong]), "an address on the wrong/down/changed adapter must fail");
+        foreach (var property in new[] { "schemaVersion", "endpointId", "adapterId", "address", "prefixLength" })
+        {
+            var node = System.Text.Json.Nodes.JsonNode.Parse(localJson.GetRawText())!;
+            node[property] = null;
+            var invalid = System.Text.Json.JsonSerializer.SerializeToElement(node);
+            ExpectInvalid(() => LocalNdiReadinessService.ValidateLocalState(invalid, [nic]), "incomplete local identity must fail");
+            ExpectInvalid(() => LocalNdiReadinessService.ValidateStatusIdentity(invalid, selected), "mismatched responding identity must fail");
+        }
         var identity = new JobIdentity(Guid.NewGuid().ToString(), "job-1", "revision-1");
         var job = new JobSnapshot("Test", "Remote API", DateTimeOffset.Now, [], identity, "192.0.2.5");
         JobRevisionGuard.Validate(identity, job);
