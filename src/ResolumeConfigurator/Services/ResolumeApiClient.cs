@@ -25,6 +25,8 @@ public sealed class ResolumeApiClient : IDisposable
 
     public async Task<ArenaProduct> GetProductAsync(CancellationToken ct = default)
     {
+        using var timeout = CreateStreamingTimeout(ct);
+        ct = timeout.Token;
         using var request = new HttpRequestMessage(HttpMethod.Get, "product");
         using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
         await EnsureSuccessAsync(response, "read Arena product information", ct);
@@ -90,6 +92,8 @@ public sealed class ResolumeApiClient : IDisposable
 
     public async Task<string> GetCompositionNameAsync(CancellationToken ct = default)
     {
+        using var timeout = CreateStreamingTimeout(ct);
+        ct = timeout.Token;
         using var request = new HttpRequestMessage(HttpMethod.Get, "composition");
         using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
         await EnsureSuccessAsync(response, "read the Arena composition name", ct);
@@ -497,6 +501,15 @@ public sealed class ResolumeApiClient : IDisposable
     }
 
     public static string ToFileUrl(string path) => new Uri(Path.GetFullPath(path)).AbsoluteUri;
+
+    private CancellationTokenSource CreateStreamingTimeout(CancellationToken ct)
+    {
+        // ResponseHeadersRead ends HttpClient's timeout at the headers. Keep a
+        // deadline alive through body reads, including unsuccessful responses.
+        var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(_http.Timeout);
+        return timeout;
+    }
 
     private static bool IsCompleteCompositionFile(string path)
     {

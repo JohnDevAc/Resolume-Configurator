@@ -4,7 +4,7 @@ namespace ResolumeConfigurator.Services;
 
 public static partial class ResolutionParser
 {
-    [GeneratedRegex(@"(?<width>\d{3,5})\s*[x×]\s*(?<height>\d{3,5})", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"(?<!\d)(?<width>\d{3,5})\s*[x×]\s*(?<height>\d{3,5})(?!\d)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex DimensionsRegex();
 
     public static bool TryParse(string? value, out int width, out int height)

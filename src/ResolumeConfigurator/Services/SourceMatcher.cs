@@ -10,7 +10,11 @@ public static partial class SourceMatcher
 
     public static ArenaSource? BestMatch(JobDevice device, IEnumerable<ArenaSource> sources)
     {
-        var identities = new[] { device.NdiChannelName, device.Hostname }.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray();
+        var identities = new[] { device.NdiChannelName, device.Hostname }
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .Select(value => (Value: value, Normalized: Normalize(value)))
+            .Where(identity => identity.Normalized.Length > 0)
+            .ToArray();
         return sources.Select(source => new { Source = source, Score = Score(source, identities) })
             .Where(candidate => candidate.Score > 0)
             .OrderByDescending(candidate => candidate.Score)
@@ -19,19 +23,20 @@ public static partial class SourceMatcher
             .FirstOrDefault();
     }
 
-    private static int Score(ArenaSource source, IReadOnlyList<string> identities)
+    private static int Score(ArenaSource source, IReadOnlyList<(string Value, string Normalized)> identities)
     {
         var sourceValues = new[] { source.Name, source.IdString };
         var best = 0;
-        foreach (var identity in identities)
         foreach (var sourceValue in sourceValues)
         {
-            if (sourceValue.Equals(identity, StringComparison.OrdinalIgnoreCase)) best = Math.Max(best, 100);
-            var normalizedIdentity = Normalize(identity);
             var normalizedSource = Normalize(sourceValue);
-            if (normalizedSource == normalizedIdentity) best = Math.Max(best, 95);
-            else if (normalizedSource.StartsWith(normalizedIdentity, StringComparison.Ordinal)) best = Math.Max(best, 80);
-            else if (normalizedSource.Contains(normalizedIdentity, StringComparison.Ordinal)) best = Math.Max(best, 60);
+            foreach (var identity in identities)
+            {
+                if (sourceValue.Equals(identity.Value, StringComparison.OrdinalIgnoreCase)) best = Math.Max(best, 100);
+                if (normalizedSource == identity.Normalized) best = Math.Max(best, 95);
+                else if (normalizedSource.StartsWith(identity.Normalized, StringComparison.Ordinal)) best = Math.Max(best, 80);
+                else if (normalizedSource.Contains(identity.Normalized, StringComparison.Ordinal)) best = Math.Max(best, 60);
+            }
         }
         return best;
     }

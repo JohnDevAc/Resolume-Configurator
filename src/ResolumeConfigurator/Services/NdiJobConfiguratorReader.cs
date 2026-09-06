@@ -10,10 +10,7 @@ namespace ResolumeConfigurator.Services;
 public sealed class NdiJobConfiguratorReader
 {
     private const int Port = 8091;
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
-    {
-        PropertyNameCaseInsensitive = true
-    };
+    private static readonly HttpClient ApiClient = new() { Timeout = Timeout.InfiniteTimeSpan };
 
     public string ResolveStatePath()
     {
@@ -27,6 +24,7 @@ public sealed class NdiJobConfiguratorReader
 
     public async Task<JobSnapshot> ReadAsync(CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var configuredUrl = Environment.GetEnvironmentVariable("NDI_JOB_CONFIGURATOR_URL");
         var candidates = new List<string>();
         if (!string.IsNullOrWhiteSpace(configuredUrl)) candidates.Add(configuredUrl);
@@ -34,19 +32,23 @@ public sealed class NdiJobConfiguratorReader
 
         foreach (var candidate in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
         {
-            var snapshot = await TryReadApiAsync(candidate, cancellationToken);
-            if (snapshot is not null) return await MergeLocalCredentialsAsync(snapshot, cancellationToken);
+            var snapshot = await TryReadApiAsync(candidate, cancellationToken).ConfigureAwait(false);
+            if (snapshot is not null) return await MergeLocalCredentialsAsync(snapshot, cancellationToken).ConfigureAwait(false);
         }
 
-        var discovered = await DiscoverOnLanAsync(cancellationToken);
-        if (discovered is not null) return await MergeLocalCredentialsAsync(discovered, cancellationToken);
+        var discovered = await DiscoverOnLanAsync(cancellationToken).ConfigureAwait(false);
+        if (discovered is not null) return await MergeLocalCredentialsAsync(discovered, cancellationToken).ConfigureAwait(false);
 
         var path = ResolveStatePath();
-        var document = await ReadDocumentAsync(path, cancellationToken)
-            ?? await ReadDocumentAsync(path + ".bak", cancellationToken)
+        return await ReadLocalSnapshotAsync(path, cancellationToken).ConfigureAwait(false)
             ?? throw new FileNotFoundException($"NDI Job Configurator was not found on TCP {Port} or in its local state folder.", path);
+    }
 
-        using (document) return ParseSnapshot(document.RootElement, path, includeCredentials: true);
+    internal static async Task<JobSnapshot?> ReadLocalSnapshotAsync(string path, CancellationToken cancellationToken)
+    {
+        using var document = await ReadDocumentAsync(path, cancellationToken).ConfigureAwait(false)
+            ?? await ReadDocumentAsync(path + ".bak", cancellationToken).ConfigureAwait(false);
+        return document is null ? null : ParseSnapshot(document.RootElement, path, includeCredentials: true);
     }
 
     private static JobSnapshot ParseSnapshot(JsonElement root, string source, bool includeCredentials = false)
@@ -77,29 +79,35 @@ public sealed class NdiJobConfiguratorReader
     private async Task<JobSnapshot> MergeLocalCredentialsAsync(JobSnapshot snapshot, CancellationToken cancellationToken)
     {
         var path = ResolveStatePath();
-        var document = await ReadDocumentAsync(path, cancellationToken)
-            ?? await ReadDocumentAsync(path + ".bak", cancellationToken);
-        if (document is null) return snapshot;
+        var local = await ReadLocalSnapshotAsync(path, cancellationToken).ConfigureAwait(false);
+        return MergeCredentials(snapshot, local);
+    }
 
-        using (document)
+    internal static JobSnapshot MergeCredentials(JobSnapshot snapshot, JobSnapshot? local)
+    {
+        // NDI Job Configurator provisions onboarded Kiloviews with its job
+        // credentials. A state file from a previous job must not override them.
+        var localDevices = local is not null && local.JobName.Equals(snapshot.JobName, StringComparison.Ordinal)
+            ? local.Devices : [];
+        var byId = localDevices.Where(device => !string.IsNullOrWhiteSpace(device.Id))
+            .GroupBy(device => device.Id, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First().Credentials, StringComparer.OrdinalIgnoreCase);
+        var byIp = localDevices.Where(device => !string.IsNullOrWhiteSpace(device.IpAddress))
+            .GroupBy(device => device.IpAddress, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First().Credentials, StringComparer.OrdinalIgnoreCase);
+
+        var merged = snapshot.Devices.Select(device =>
         {
-            var local = ParseSnapshot(document.RootElement, path, includeCredentials: true);
-            var byId = local.Devices.Where(device => !string.IsNullOrWhiteSpace(device.Id))
-                .GroupBy(device => device.Id, StringComparer.OrdinalIgnoreCase)
-                .ToDictionary(group => group.Key, group => group.First().Credentials, StringComparer.OrdinalIgnoreCase);
-            var byIp = local.Devices.Where(device => !string.IsNullOrWhiteSpace(device.IpAddress))
-                .GroupBy(device => device.IpAddress, StringComparer.OrdinalIgnoreCase)
-                .ToDictionary(group => group.Key, group => group.First().Credentials, StringComparer.OrdinalIgnoreCase);
-
-            var merged = snapshot.Devices.Select(device =>
-            {
-                DeviceCredentials? credentials = null;
-                if (!string.IsNullOrWhiteSpace(device.Id)) byId.TryGetValue(device.Id, out credentials);
-                if (credentials is null && !string.IsNullOrWhiteSpace(device.IpAddress)) byIp.TryGetValue(device.IpAddress, out credentials);
-                return device with { Credentials = credentials };
-            }).ToArray();
-            return snapshot with { Devices = merged };
-        }
+            DeviceCredentials? credentials = null;
+            if (!string.IsNullOrWhiteSpace(device.Id)) byId.TryGetValue(device.Id, out credentials);
+            if (credentials is null && !string.IsNullOrWhiteSpace(device.IpAddress)) byIp.TryGetValue(device.IpAddress, out credentials);
+            if (credentials is null && device.IsOnboarded && device.Role.Equals("Decoder", StringComparison.OrdinalIgnoreCase)
+                && (device.Family.Equals("N6", StringComparison.OrdinalIgnoreCase) || device.Family.Equals("N60", StringComparison.OrdinalIgnoreCase))
+                && !string.IsNullOrWhiteSpace(snapshot.JobName))
+                credentials = new DeviceCredentials("admin", snapshot.JobName);
+            return device with { Credentials = credentials };
+        }).ToArray();
+        return snapshot with { Devices = merged };
     }
 
     private static DeviceCredentials? ReadCredentials(JsonElement item)
@@ -112,27 +120,30 @@ public sealed class NdiJobConfiguratorReader
             : new DeviceCredentials(username, password);
     }
 
-    private static async Task<JobSnapshot?> TryReadApiAsync(string address, CancellationToken cancellationToken)
+    internal static async Task<JobSnapshot?> TryReadApiAsync(string address, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var root = address.TrimEnd('/');
         if (!Uri.TryCreate(root, UriKind.Absolute, out var baseUri) || baseUri.Scheme is not ("http" or "https")) return null;
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromMilliseconds(850));
-        using var client = new HttpClient { BaseAddress = new Uri(root + "/") };
+        var apiBaseUri = new Uri(root + "/");
         try
         {
-            using var healthResponse = await client.GetAsync("api/health", timeout.Token);
+            using var healthResponse = await ApiClient.GetAsync(new Uri(apiBaseUri, "api/health"), timeout.Token).ConfigureAwait(false);
             if (!healthResponse.IsSuccessStatusCode) return null;
-            using var health = JsonDocument.Parse(await healthResponse.Content.ReadAsStringAsync(timeout.Token));
-            if (!health.RootElement.TryGetProperty("product", out var product) ||
+            using var health = JsonDocument.Parse(await healthResponse.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false));
+            if (health.RootElement.ValueKind != JsonValueKind.Object ||
+                !health.RootElement.TryGetProperty("product", out var product) || product.ValueKind != JsonValueKind.String ||
                 !string.Equals(product.GetString(), "NDI Job Configurator", StringComparison.OrdinalIgnoreCase)) return null;
 
-            using var stateResponse = await client.GetAsync("api/state", timeout.Token);
+            using var stateResponse = await ApiClient.GetAsync(new Uri(apiBaseUri, "api/state"), timeout.Token).ConfigureAwait(false);
             if (!stateResponse.IsSuccessStatusCode) return null;
-            using var state = JsonDocument.Parse(await stateResponse.Content.ReadAsStringAsync(timeout.Token));
+            using var state = JsonDocument.Parse(await stateResponse.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false));
+            if (!IsSnapshot(state.RootElement)) return null;
             return ParseSnapshot(state.RootElement, baseUri.GetLeftPart(UriPartial.Authority));
         }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException) { return null; }
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested && (ex is HttpRequestException or OperationCanceledException or JsonException)) { return null; }
     }
 
     private static async Task<JobSnapshot?> DiscoverOnLanAsync(CancellationToken cancellationToken)
@@ -141,58 +152,82 @@ public sealed class NdiJobConfiguratorReader
             .Where(n => n.OperationalStatus == OperationalStatus.Up && n.NetworkInterfaceType is not NetworkInterfaceType.Loopback)
             .SelectMany(n => n.GetIPProperties().UnicastAddresses)
             .Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(a.Address))
-            .Select(a => a.Address.GetAddressBytes())
-            .DistinctBy(b => Convert.ToHexString(b))
+            .Select(a => (a.Address, a.PrefixLength))
+            .Distinct()
+            .OrderByDescending(a => a.PrefixLength)
             .ToArray();
 
+        // Probe nearby addresses first, then the rest of each actual subnet.
+        // Keep enumeration lazy: a /16 must not allocate 65,534 tasks or URLs.
         var hosts = localAddresses
-            .SelectMany(bytes => Enumerable.Range(1, 254).Select(last => $"http://{bytes[0]}.{bytes[1]}.{bytes[2]}.{last}:{Port}"))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-        if (hosts.Length == 0) return null;
+            .SelectMany(a => EnumerateSubnetHosts(a.Address, Math.Max(24, a.PrefixLength)))
+            .Concat(localAddresses.SelectMany(a => EnumerateSubnetHosts(a.Address, a.PrefixLength)))
+            .Distinct()
+            .Select(address => $"http://{address}:{Port}");
+        if (localAddresses.Length == 0) return null;
 
-        using var gate = new SemaphoreSlim(48);
         using var found = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        // Discovery is best effort; unreachable wide/VPN subnets must not hold
+        // up the local state fallback indefinitely. An explicit URL is tried first.
+        found.CancelAfter(TimeSpan.FromSeconds(15));
         JobSnapshot? result = null;
-        var tasks = hosts.Select(async host =>
+        try
         {
-            await gate.WaitAsync(found.Token);
-            try
+            await Parallel.ForEachAsync(hosts, new ParallelOptions { MaxDegreeOfParallelism = 48, CancellationToken = found.Token }, async (host, token) =>
             {
-                if (result is not null) return;
-                var candidate = await TryReadApiAsync(host, found.Token);
+                var candidate = await TryReadApiAsync(host, token).ConfigureAwait(false);
                 if (candidate is null) return;
                 if (Interlocked.CompareExchange(ref result, candidate, null) is null) found.Cancel();
-            }
-            catch (OperationCanceledException) { }
-            finally { gate.Release(); }
-        }).ToArray();
-        try { await Task.WhenAll(tasks); }
-        catch (OperationCanceledException) when (result is not null) { }
+            }).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { }
+        cancellationToken.ThrowIfCancellationRequested();
         return result;
+    }
+
+    internal static IEnumerable<IPAddress> EnumerateSubnetHosts(IPAddress address, int prefixLength)
+    {
+        if (address.AddressFamily != AddressFamily.InterNetwork || prefixLength is < 0 or > 32)
+            throw new ArgumentOutOfRangeException(nameof(prefixLength));
+        var bytes = address.GetAddressBytes();
+        var value = ((uint)bytes[0] << 24) | ((uint)bytes[1] << 16) | ((uint)bytes[2] << 8) | bytes[3];
+        var mask = prefixLength == 0 ? 0U : uint.MaxValue << (32 - prefixLength);
+        var network = value & mask;
+        var broadcast = network | ~mask;
+        var first = prefixLength >= 31 ? (ulong)network : (ulong)network + 1;
+        var last = prefixLength >= 31 ? (ulong)broadcast : (ulong)broadcast - 1;
+        for (var host = first; host <= last; host++)
+            yield return new IPAddress(new[] { (byte)(host >> 24), (byte)(host >> 16), (byte)(host >> 8), (byte)host });
     }
 
     private static async Task<JsonDocument?> ReadDocumentAsync(string path, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (!File.Exists(path)) return null;
         for (var attempt = 0; attempt < 3; attempt++)
         {
             try
             {
                 await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-                return await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+                var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+                if (IsSnapshot(document.RootElement)) return document;
+                document.Dispose();
             }
-            catch (IOException) when (attempt < 2) { await Task.Delay(80, cancellationToken); }
-            catch (JsonException) when (attempt < 2) { await Task.Delay(80, cancellationToken); }
+            catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException) { }
+            if (attempt < 2) await Task.Delay(80, cancellationToken).ConfigureAwait(false);
         }
         return null;
     }
+
+    private static bool IsSnapshot(JsonElement root) =>
+        root.ValueKind == JsonValueKind.Object && root.TryGetProperty("devices", out var devices)
+        && devices.ValueKind == JsonValueKind.Array && devices.EnumerateArray().All(item => item.ValueKind == JsonValueKind.Object);
 
     private static string? GetString(JsonElement element, params string[] path)
     {
         foreach (var segment in path)
         {
-            if (!element.TryGetProperty(segment, out element)) return null;
+            if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(segment, out element)) return null;
         }
         return element.ValueKind == JsonValueKind.String ? element.GetString() : element.ToString();
     }

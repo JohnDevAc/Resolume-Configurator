@@ -1,6 +1,5 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
-using System.Diagnostics;
 using System.Net.Http;
 using System.Windows;
 using System.Windows.Controls;
@@ -18,6 +17,7 @@ public partial class MainWindow : Window
     private bool _busy;
     private bool _decoderHelperPending;
     private bool _updatingSetupConstraints;
+    private readonly HashSet<ValidationError> _inputValidationErrors = [];
     private string _compositionName = "NDI Job";
     private const int DecoderHelperStatusMessage = 0x8001;
 
@@ -46,12 +46,19 @@ public partial class MainWindow : Window
         NdiCompositionSharingToggle.Unchecked += (_, _) => UpdatePlan();
         AutoPlaceSourcesToggle.Checked += (_, _) => UpdatePlan();
         AutoPlaceSourcesToggle.Unchecked += (_, _) => UpdatePlan();
+        Validation.AddErrorHandler(DecoderGrid, (_, e) =>
+        {
+            if (e.Action == ValidationErrorEventAction.Added) _inputValidationErrors.Add(e.Error);
+            else _inputValidationErrors.Remove(e.Error);
+            UpdatePlan();
+        });
         SourceInitialized += (_, _) => ((HwndSource)PresentationSource.FromVisual(this)).AddHook(WindowMessageHook);
         Loaded += async (_, _) => await InitializeAsync();
     }
 
     private async Task InitializeAsync()
     {
+        SetBusy(true);
         Topmost = true;
         Activate();
         ConfigurationProgress.Value = 0;
@@ -72,6 +79,7 @@ public partial class MainWindow : Window
             AppendLog("ERROR: " + ex.Message);
         }
 
+        SetBusy(false);
         await RefreshAsync();
         ConfigurationProgress.IsIndeterminate = false;
         ConfigurationProgress.Value = 0;
@@ -84,8 +92,12 @@ public partial class MainWindow : Window
         if (_busy) return;
         SetBusy(true);
         LogBox.Clear();
+        foreach (var decoder in Decoders) decoder.PropertyChanged -= Row_OnPropertyChanged;
+        foreach (var encoder in Encoders) encoder.PropertyChanged -= Row_OnPropertyChanged;
         Decoders.Clear();
         Encoders.Clear();
+        _inputValidationErrors.Clear();
+        DecoderCountText.Text = EncoderCountText.Text = "0";
         EncoderMatchWarningText.Visibility = Visibility.Collapsed;
         _product = null;
         try
@@ -121,17 +133,18 @@ public partial class MainWindow : Window
                     encoder.ArenaSourceName = match?.Name ?? "";
                     encoder.ArenaSourceIdString = match?.IdString ?? "";
                     encoder.MatchStatus = match is null ? "Missing" : "Matched";
-                    encoder.PropertyChanged += Row_OnPropertyChanged;
                 }
                 AppendLog($"Arena reported {sources.Count} live NDI source(s).");
             }
-            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+            catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException)
             {
+                _product = null;
                 ArenaStatusText.Text = "Arena: webserver unavailable";
                 AppendLog("Start Arena and enable Preferences > Webserver on port 8080.");
             }
 
             foreach (var decoder in Decoders) decoder.PropertyChanged += Row_OnPropertyChanged;
+            foreach (var encoder in Encoders) encoder.PropertyChanged += Row_OnPropertyChanged;
             DecoderCountText.Text = Decoders.Count.ToString();
             EncoderCountText.Text = Encoders.Count.ToString();
             AppendLog($"Read {Decoders.Count} decoder(s) and {Encoders.Count} encoder(s) in NDI Job Configurator order.");
@@ -139,6 +152,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            _product = null;
             JobStatusText.Text = "JOB UNAVAILABLE";
             JobStatusText.ToolTip = null;
             ArenaStatusText.Text = "Arena: not checked";
@@ -157,31 +171,24 @@ public partial class MainWindow : Window
         var resolution = WorkspaceResolutionComboBox.SelectedItem as WorkspaceResolutionOption ?? WorkspaceResolutions[1];
         var framesPerSecond = FrameRateComboBox.SelectedItem is int selectedFrameRate ? selectedFrameRate : 50;
         var totalColumnCount = (int)ColumnCountSlider.Value;
-        var sourceStartColumn = (int)SourceStartColumnSlider.Value;
-        var autoPlaceSources = AutoPlaceSourcesToggle.IsChecked == true;
         var sharingStatus = NdiCompositionSharingToggle.IsChecked == true ? "NDI SHARING ON" : "NDI SHARING OFF";
         ConfigurationSummaryText.Text = $"{resolution.Name.ToUpperInvariant()}  ·  {framesPerSecond} FPS  ·  {totalColumnCount} COLUMNS  ·  {sharingStatus}";
 
         var unmatchedSources = Encoders.Count(e => string.IsNullOrWhiteSpace(e.ArenaSourceToken));
         EncoderMatchWarningText.Visibility = unmatchedSources > 0 ? Visibility.Visible : Visibility.Collapsed;
-        var missingSources = autoPlaceSources ? unmatchedSources : 0;
         var reviewResolutions = Decoders.Count(d => d.UsedFallbackResolution);
 
         var errors = new List<string>();
         if (_product is null) errors.Add("Arena webserver is not connected");
-        if (Decoders.Count == 0) errors.Add("no onboarded decoders were found");
-        if (autoPlaceSources && Encoders.Count == 0) errors.Add("no onboarded encoders were found for automatic placement");
-        if (autoPlaceSources && Encoders.Count + 1 > ArenaConfigurationOrchestrator.MaximumColumnCount)
-            errors.Add($"{Encoders.Count} encoder sources plus the Video Router exceed the {ArenaConfigurationOrchestrator.MaximumColumnCount}-column maximum");
-        if (Decoders.Any(decoder => decoder.Device.Credentials is null)) errors.Add("saved decoder credentials are missing from NDI Job Configurator");
-        if (autoPlaceSources && sourceStartColumn + Encoders.Count > totalColumnCount)
-            errors.Add($"sources starting at column {sourceStartColumn} leave no column for the Video Router");
-        if (missingSources > 0) errors.Add($"{missingSources} encoder source{Plural(missingSources)} need matching");
-        if (string.IsNullOrWhiteSpace(_compositionName)) errors.Add("composition name is empty");
-        if (Decoders.Any(d => d.Width is < 320 or > 32768 || d.Height is < 240 or > 32768)) errors.Add("a decoder resolution is invalid");
+        if (_product is not null && !_product.Name.Equals("Arena", StringComparison.OrdinalIgnoreCase)) errors.Add("Resolume Arena is required");
+        if (_inputValidationErrors.Count > 0) errors.Add("decoder dimensions must be whole numbers");
+        try { ArenaConfigurationOrchestrator.ValidatePlan(BuildPlan()); }
+        catch (InvalidOperationException ex) { errors.Add(ex.Message.TrimEnd('.')); }
 
-        ConfigureButton.IsEnabled = !_busy && errors.Count == 0;
-        ValidationText.Text = errors.Count == 0
+        ConfigureButton.IsEnabled = !_busy && !_decoderHelperPending && errors.Count == 0;
+        ValidationText.Text = _busy || _decoderHelperPending
+            ? _decoderHelperPending ? "Configuring Arena — waiting for completion." : "Detecting job devices and Arena…"
+            : errors.Count == 0
             ? reviewResolutions > 0 ? $"Ready — review {reviewResolutions} fallback decoder resolution{Plural(reviewResolutions)}." : "Ready to configure Arena."
             : "Not ready — " + string.Join("; ", errors) + ".";
     }
@@ -227,24 +234,34 @@ public partial class MainWindow : Window
 
     private async void ConfigureButton_OnClick(object sender, RoutedEventArgs e)
     {
-        var plan = BuildPlan();
+        if (_busy || _decoderHelperPending) return;
+        if (!DecoderGrid.CommitEdit(DataGridEditingUnit.Cell, true) || !DecoderGrid.CommitEdit(DataGridEditingUnit.Row, true)
+            || !EncoderGrid.CommitEdit(DataGridEditingUnit.Cell, true) || !EncoderGrid.CommitEdit(DataGridEditingUnit.Row, true))
+        {
+            ValidationText.Text = "Correct the invalid device values before configuring Arena.";
+            return;
+        }
+        UpdatePlan();
+        if (!ConfigureButton.IsEnabled) return;
         Title = "Resolume Arena Configurator — configuring";
         Topmost = true;
         Activate();
         ConfigurationProgress.Value = 0;
         ConfigurationProgress.IsIndeterminate = true;
+        _decoderHelperPending = true;
         SetBusy(true);
         LogBox.Clear();
         using var cancellation = new CancellationTokenSource();
         try
         {
+            var plan = BuildPlan();
             var progress = new Progress<string>(AppendLog);
             var result = await new ArenaConfigurationOrchestrator().ConfigureAsync(plan, progress, cancellation.Token);
-            _decoderHelperPending = true;
             AppendLog($"Arena restart initiated. Decoder activation will complete in this window. Preset: {result.PresetFile}");
         }
         catch (Exception ex)
         {
+            _decoderHelperPending = false;
             AppendLog("ERROR: " + ex.Message);
             Title = "Resolume Arena Configurator — configuration stopped";
             ConfigurationProgress.IsIndeterminate = false;
@@ -252,7 +269,7 @@ public partial class MainWindow : Window
         }
         finally
         {
-            SetBusy(false);
+            SetBusy(_decoderHelperPending);
             if (!_decoderHelperPending) Topmost = false;
             UpdatePlan();
         }
@@ -262,16 +279,16 @@ public partial class MainWindow : Window
 
     private void SetBusy(bool value)
     {
-        _busy = value;
-        Cursor = value ? System.Windows.Input.Cursors.Wait : null;
-        RefreshDetectionButton.IsEnabled = !value;
-        if (value) ConfigureButton.IsEnabled = false;
-        else UpdatePlan();
+        _busy = value || _decoderHelperPending;
+        Cursor = _busy ? System.Windows.Input.Cursors.Wait : null;
+        ConfigurationInputs.IsEnabled = !_busy;
+        RefreshDetectionButton.IsEnabled = !_busy;
+        UpdatePlan();
     }
     private void AppendLog(string message) { LogBox.AppendText($"{DateTime.Now:HH:mm:ss}  {message}{Environment.NewLine}"); LogBox.ScrollToEnd(); }
     private IntPtr WindowMessageHook(IntPtr window, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
-        if (message != DecoderHelperStatusMessage) return IntPtr.Zero;
+        if (message != DecoderHelperStatusMessage || !_decoderHelperPending) return IntPtr.Zero;
         handled = true;
         _decoderHelperPending = false;
         SetBusy(false);

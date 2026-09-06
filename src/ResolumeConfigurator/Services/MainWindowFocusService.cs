@@ -12,12 +12,12 @@ public static class MainWindowFocusService
     private const uint SwpShowWindow = 0x0040;
     private const int SwRestore = 9;
 
-    public static async Task ReturnToMainWindowAsync(string status, CancellationToken ct)
+    public static async Task ReturnToMainWindowAsync(string status, CancellationToken ct, int? parentProcessId = null)
     {
         IntPtr window = IntPtr.Zero;
         for (var attempt = 0; attempt < 40 && window == IntPtr.Zero; attempt++)
         {
-            window = FindMainWindow();
+            window = FindMainWindow(parentProcessId);
             if (window == IntPtr.Zero) await Task.Delay(250, ct).ConfigureAwait(false);
         }
         if (window == IntPtr.Zero) return;
@@ -29,7 +29,7 @@ public static class MainWindowFocusService
         PostMessage(window, DecoderHelperStatusMessage, status.StartsWith("complete", StringComparison.OrdinalIgnoreCase) ? new IntPtr(1) : new IntPtr(2), IntPtr.Zero);
     }
 
-    private static IntPtr FindMainWindow()
+    private static IntPtr FindMainWindow(int? parentProcessId)
     {
         var found = IntPtr.Zero;
         EnumWindows((window, _) =>
@@ -37,6 +37,7 @@ public static class MainWindowFocusService
             if (!IsWindowVisible(window)) return true;
             GetWindowThreadProcessId(window, out var processId);
             if (processId == (uint)Environment.ProcessId) return true;
+            if (parentProcessId.HasValue && processId != (uint)parentProcessId.Value) return true;
             var length = GetWindowTextLength(window);
             if (length <= 0) return true;
             var title = new StringBuilder(length + 1);

@@ -41,7 +41,7 @@
     </Border>
 
     <StackPanel Grid.Row="1" Margin="24,18,24,20">
-        <Grid>
+        <Grid x:Name="ConfigurationInputs">
           <Grid.ColumnDefinitions><ColumnDefinition Width="1.6*"/><ColumnDefinition Width="14"/><ColumnDefinition Width="0.9*"/></Grid.ColumnDefinitions>
 
           <Border Style="{StaticResource Card}">
@@ -56,8 +56,8 @@
                   <DataGridTextColumn Header="#" Binding="{Binding Order}" Width="36" IsReadOnly="True"/>
                   <DataGridTextColumn Header="OUTPUT / GROUP" Binding="{Binding OutputName}" Width="*" IsReadOnly="True"/>
                   <DataGridTextColumn Header="IP" Binding="{Binding IpAddress}" Width="105" IsReadOnly="True"/>
-                  <DataGridTextColumn Header="W" Binding="{Binding Width, UpdateSourceTrigger=PropertyChanged}" Width="68"/>
-                  <DataGridTextColumn Header="H" Binding="{Binding Height, UpdateSourceTrigger=PropertyChanged}" Width="68"/>
+                  <DataGridTextColumn Header="W" Binding="{Binding Width, UpdateSourceTrigger=PropertyChanged, NotifyOnValidationError=True}" Width="68"/>
+                  <DataGridTextColumn Header="H" Binding="{Binding Height, UpdateSourceTrigger=PropertyChanged, NotifyOnValidationError=True}" Width="68"/>
                   <DataGridTextColumn Header="SOURCE" Binding="{Binding ResolutionStatus}" Width="76" IsReadOnly="True"/>
                 </DataGrid.Columns>
               </DataGrid>
@@ -161,7 +161,7 @@
         <ProgressBar x:Name="ConfigurationProgress" Grid.ColumnSpan="2" Height="4" Margin="0,0,0,11" Minimum="0" Maximum="100" Value="0" Background="#353A3B" Foreground="{StaticResource AccentBrush}"/>
         <StackPanel Grid.Row="1" VerticalAlignment="Center">
           <TextBlock x:Name="ValidationText" Text="Waiting for discovery." FontWeight="SemiBold"/>
-          <TextBlock Text="Configure overwrites the currently open composition without saving it. Secondary and Holding layers will be collapsed." Foreground="#D6A75B" FontSize="11" Margin="0,2,0,0"/>
+          <TextBlock Text="Configure saves a backup, then overwrites the open composition. Secondary and Holding layers will be collapsed." Foreground="#D6A75B" FontSize="11" Margin="0,2,0,0"/>
           <TextBlock Text="© 2026 John Lightfoot · Proprietary software · Free for non-commercial use" Foreground="#717B7D" FontSize="10" Margin="0,2,0,0"/>
         </StackPanel>
         <Button x:Name="ConfigureButton" Grid.Row="1" Grid.Column="1" Content="CONFIGURE ARENA" Click="ConfigureButton_OnClick" IsEnabled="False" Padding="24,11"/>

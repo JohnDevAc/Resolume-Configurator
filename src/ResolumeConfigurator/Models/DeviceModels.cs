@@ -62,7 +62,18 @@ public sealed class EncoderRow : ObservableRow
     public string DeviceLabel => $"{Device.Hostname}  ·  {Device.Model}";
     public string IpAddress => Device.IpAddress;
     public string NdiChannelName => Device.NdiChannelName;
-    public string ArenaSourceName { get => _arenaSourceName; set => Set(ref _arenaSourceName, value); }
+    public string ArenaSourceName
+    {
+        get => _arenaSourceName;
+        set
+        {
+            if (_arenaSourceName == value) return;
+            // A correction in the editable source column must replace the detected token.
+            ArenaSourceIdString = "";
+            Set(ref _arenaSourceName, value);
+            MatchStatus = string.IsNullOrWhiteSpace(value) ? "Missing" : "Manual";
+        }
+    }
     public string ArenaSourceIdString { get => _arenaSourceIdString; set => Set(ref _arenaSourceIdString, value); }
     public string ArenaSourceToken => string.IsNullOrWhiteSpace(ArenaSourceIdString) ? ArenaSourceName : ArenaSourceIdString;
     public string MatchStatus { get => _matchStatus; set => Set(ref _matchStatus, value); }

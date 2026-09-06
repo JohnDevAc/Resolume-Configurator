@@ -4,8 +4,23 @@ namespace ResolumeConfigurator.Services;
 
 public sealed class ArenaRestartService
 {
-    public async Task RestartAsync(string compositionFile, string expectedCompositionName, IProgress<string>? progress, CancellationToken ct)
+    public async Task RestartAsync(string compositionFile, string expectedJobName, IProgress<string>? progress, CancellationToken ct,
+        int sourceStartColumn, int sourceCount)
     {
+        if (!File.Exists(compositionFile)) throw new FileNotFoundException("The saved job composition was not found before restart.", compositionFile);
+        var companionPath = Environment.ProcessPath
+            ?? throw new InvalidOperationException("Could not determine the companion executable path for post-restart activation.");
+        await RestartArenaAsync(compositionFile, ct).ConfigureAwait(false);
+        progress?.Report("Restarted Arena after saving the composition and active Advanced Output XML.");
+        using var worker = Process.Start(CreateWorkerStartInfo(companionPath, expectedJobName, Environment.ProcessId,
+            compositionFile, sourceStartColumn, sourceCount))
+            ?? throw new InvalidOperationException("Windows did not start the post-restart activation worker.");
+        progress?.Report("Launched Arena and handed decoder activation to a fresh helper process.");
+    }
+
+    internal async Task RestartArenaAsync(string compositionFile, CancellationToken ct)
+    {
+        if (!File.Exists(compositionFile)) throw new FileNotFoundException("The saved composition was not found before restart.", compositionFile);
         var arenaProcesses = Process.GetProcessesByName("Arena");
         if (arenaProcesses.Length != 1)
         {
@@ -26,21 +41,27 @@ public sealed class ArenaRestartService
             arena.Kill(entireProcessTree: true);
             await arena.WaitForExitAsync(ct).ConfigureAwait(false);
         }
-        progress?.Report("Stopped Arena after saving the composition and active Advanced Output XML.");
         await Task.Delay(1200, ct).ConfigureAwait(false);
 
+        using var restartedArena = Process.Start(CreateArenaStartInfo(executablePath, compositionFile))
+            ?? throw new InvalidOperationException("Windows did not start Resolume Arena.");
+    }
+
+    internal static ProcessStartInfo CreateArenaStartInfo(string executablePath, string compositionFile)
+    {
         var startInfo = new ProcessStartInfo
         {
             FileName = executablePath,
             WorkingDirectory = Path.GetDirectoryName(executablePath) ?? Environment.CurrentDirectory,
             UseShellExecute = true
         };
-        var restartedArena = Process.Start(startInfo)
-            ?? throw new InvalidOperationException("Windows did not start Resolume Arena.");
-        restartedArena.Dispose();
+        startInfo.ArgumentList.Add(compositionFile);
+        return startInfo;
+    }
 
-        var companionPath = Environment.ProcessPath
-            ?? throw new InvalidOperationException("Could not determine the companion executable path for post-restart activation.");
+    internal static ProcessStartInfo CreateWorkerStartInfo(string companionPath, string expectedJobName, int parentProcessId,
+        string compositionFile, int sourceStartColumn, int sourceCount)
+    {
         var workerStartInfo = new ProcessStartInfo
         {
             FileName = companionPath,
@@ -49,10 +70,11 @@ public sealed class ArenaRestartService
             WindowStyle = ProcessWindowStyle.Hidden
         };
         workerStartInfo.ArgumentList.Add("--post-restart");
-        workerStartInfo.ArgumentList.Add(expectedCompositionName);
-        var worker = Process.Start(workerStartInfo)
-            ?? throw new InvalidOperationException("Windows did not start the post-restart activation worker.");
-        worker.Dispose();
-        progress?.Report("Launched Arena and handed decoder activation to a fresh helper process.");
+        workerStartInfo.ArgumentList.Add(expectedJobName);
+        workerStartInfo.ArgumentList.Add(parentProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        workerStartInfo.ArgumentList.Add(compositionFile);
+        workerStartInfo.ArgumentList.Add(sourceStartColumn.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        workerStartInfo.ArgumentList.Add(sourceCount.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        return workerStartInfo;
     }
 }

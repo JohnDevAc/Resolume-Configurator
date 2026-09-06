@@ -16,9 +16,10 @@
     <Copyright>Copyright © 2026 John Lightfoot. All rights reserved.</Copyright>
     <PackageLicenseFile>LICENSE</PackageLicenseFile>
     <PackageRequireLicenseAcceptance>true</PackageRequireLicenseAcceptance>
-    <Version>0.3.4</Version>
+    <Version>0.3.5</Version>
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="ResolumeConfigurator.Tests" />
     <Resource Include="Assets\app-icon.png" />
     <None Include="..\..\LICENSE" Link="LICENSE" Pack="true" PackagePath="" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

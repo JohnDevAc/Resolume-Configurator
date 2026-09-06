@@ -1,6 +1,20 @@
+using System.IO;
 using System.Xml.Linq;
 using ResolumeConfigurator.Models;
 using ResolumeConfigurator.Services;
+
+if (args.Contains("--inspect-fleet", StringComparer.OrdinalIgnoreCase))
+    return await LiveIntegrationChecks.InspectFleetAsync(args);
+
+if (args.Contains("--backup-arena", StringComparer.OrdinalIgnoreCase))
+{
+    var path = args.SkipWhile(argument => argument != "--backup-arena").Skip(1).First();
+    Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
+    using var api = new ResolumeApiClient();
+    await api.SaveCompositionAsync(path, CancellationToken.None);
+    Console.WriteLine($"Saved live composition to {path}");
+    return 0;
+}
 
 if (args.Contains("--probe-arena", StringComparer.OrdinalIgnoreCase))
 {
@@ -44,6 +58,21 @@ var tests = new (string Name, Action Test)[]
 {
     ("resolution parser", TestResolutionParser),
     ("source matcher", TestSourceMatcher),
+    ("empty source identities", RegressionTests.EmptySourceIdentities),
+    ("manual source correction", RegressionTests.ManualSourceCorrection),
+    ("decoder preset name collisions", RegressionTests.DecoderPresetNameCollisions),
+    ("invalid resolution boundaries", RegressionTests.InvalidResolutionBoundaries),
+    ("streaming API timeouts", () => RegressionTests.StreamingApiTimeoutsAsync().GetAwaiter().GetResult()),
+    ("local state backup recovery", () => RegressionTests.LocalStateRecoveryAsync().GetAwaiter().GetResult()),
+    ("discovery cancellation", () => RegressionTests.DiscoveryCancellationAsync().GetAwaiter().GetResult()),
+    ("job API response handling", () => RegressionTests.JobApiResponsesAsync().GetAwaiter().GetResult()),
+    ("restart launch arguments", RegressionTests.RestartLaunchArguments),
+    ("subnet discovery", RegressionTests.SubnetDiscovery),
+    ("job credential selection", RegressionTests.JobCredentialSelection),
+    ("post-restart clip restoration", RegressionTests.RestartClipRestoration),
+    ("stale Arena composition detection", RegressionTests.StaleArenaComposition),
+    ("configuration preflight", RegressionTests.ConfigurationPreflight),
+    ("WPF validation and busy state", WpfRegressionTests.Run),
     ("Arena source URL", TestSourceUrl),
     ("advanced output preset", TestPreset),
     ("active advanced output XML", TestActiveAdvancedOutput),
@@ -63,6 +92,7 @@ foreach (var test in tests)
     catch (Exception ex) { failures.Add($"FAIL  {test.Name}: {ex.Message}"); }
 }
 foreach (var failure in failures) Console.Error.WriteLine(failure);
+Console.WriteLine($"{tests.Length - failures.Count}/{tests.Length} tests passed.");
 return failures.Count == 0 ? 0 : 1;
 
 static void TestResolutionParser()
@@ -256,5 +286,5 @@ static void TestN6PresetSlotSelection()
         "N6EncoderTest-KV-001", "192.168.0.16:5964"), "reject a matching name from a different NDI host");
 }
 
-static JobDevice Device(string hostname, string channel, string role) => new("id", "192.168.0.1", hostname, "N60", "N60", role, channel, "1920x1080p50", true, "Online");
+static JobDevice Device(string hostname, string channel, string role) => new("id", "192.168.0.1", hostname, "N60", "N60", role, channel, "1920x1080p50", true, "Online", new("test-user", "test-password"));
 static void Assert(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }

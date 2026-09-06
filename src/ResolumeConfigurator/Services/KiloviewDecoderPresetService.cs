@@ -10,6 +10,30 @@ public sealed class KiloviewDecoderPresetService
 {
     private const int N6PresetCapacity = 10;
 
+    public async Task ValidateConnectionsAsync(IReadOnlyList<DecoderRow> decoders, CancellationToken ct)
+    {
+        foreach (var decoder in decoders)
+        {
+            if (decoder.Device.Credentials is null) throw new InvalidOperationException($"Saved credentials are missing for {decoder.OutputName}.");
+            try
+            {
+                var isN60 = decoder.Device.Family.Contains("N60", StringComparison.OrdinalIgnoreCase)
+                    || decoder.Device.Model.Contains("N60", StringComparison.OrdinalIgnoreCase);
+                using var client = isN60 ? await AuthorizeN60Async(decoder, ct) : await AuthorizeN6Async(decoder, ct);
+                using var presets = await GetJsonAsync(client, isN60 ? "/api/codec/preset/get" : "/api/preview/get", "check decoder preset access", ct);
+                if (isN60)
+                    SelectN60Slot(Data(presets.RootElement).EnumerateArray().Select(item => new N60PresetSummary(
+                        Number(item, "id"), String(item, "channel_name"), String(item, "name"), String(item, "color"), IsN60PresetEmpty(item))), decoder.OutputName, out _);
+                else
+                    SelectN6Slot(N6Positions(presets.RootElement).Select(item => new N6PresetSummary(Number(item, "id"), String(item, "stream_name"))), decoder.OutputName, out _);
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested && (ex is HttpRequestException or InvalidOperationException or OperationCanceledException))
+            {
+                throw new InvalidOperationException($"{decoder.OutputName} ({decoder.IpAddress}) failed the decoder preflight: {ex.Message}", ex);
+            }
+        }
+    }
+
     public async Task<IReadOnlyList<DecoderPresetResult>> ConfigureAsync(
         IReadOnlyList<DecoderRow> decoders,
         IProgress<string>? progress,
@@ -129,6 +153,20 @@ public sealed class KiloviewDecoderPresetService
             currentUrl,
             discovered.ValueKind == JsonValueKind.Object ? String(discovered, "name", String(discovered, "channel_name")) : "",
             discovered.ValueKind == JsonValueKind.Object ? String(discovered, "url") : "");
+    }
+
+    public async Task<N60DecoderDiagnostic> InspectN60Async(DecoderRow decoder, CancellationToken ct)
+    {
+        if (decoder.Device.Credentials is null) throw new InvalidOperationException($"Saved credentials are missing for {decoder.OutputName}.");
+        using var client = await AuthorizeN60Async(decoder, ct);
+        using var presets = await GetJsonAsync(client, "/api/codec/preset/get", "inspect N60 presets", ct);
+        var rows = Data(presets.RootElement).EnumerateArray().Select(item => new N60PresetSummary(
+            Number(item, "id"), String(item, "channel_name"), String(item, "name"), String(item, "color"),
+            IsN60PresetEmpty(item), String(item, "original_url", String(item, "url")))).ToArray();
+        using var current = await GetJsonAsync(client, "/api/codec/decode/get", "inspect N60 active output", ct);
+        var data = Data(current.RootElement);
+        return new N60DecoderDiagnostic(decoder.OutputName, rows,
+            String(data, "channel_name", String(data, "name")), String(data, "original_url", String(data, "url", String(data, "ip"))));
     }
 
     private static async Task<DecoderPresetResult> ConfigureN60Async(DecoderRow decoder, CancellationToken ct)
@@ -373,16 +411,25 @@ public sealed class KiloviewDecoderPresetService
         var name = String(source, "name", String(source, "ndi_name")).Trim();
         if (channel.Equals(outputName, StringComparison.OrdinalIgnoreCase)) return 20;
         if (name.Equals(outputName, StringComparison.OrdinalIgnoreCase)) return 18;
-        if (name.Contains(outputName, StringComparison.OrdinalIgnoreCase)) return 12;
-        if (channel.Contains(outputName, StringComparison.OrdinalIgnoreCase)) return 10;
+        if (MatchesOutputName(name, outputName)) return 12;
+        if (MatchesOutputName(channel, outputName)) return 10;
         return 0;
     }
 
     private static bool MatchesOutput(string channel, string name, string outputName) =>
-        channel.Equals(outputName, StringComparison.OrdinalIgnoreCase)
-        || name.Equals(outputName, StringComparison.OrdinalIgnoreCase)
-        || channel.Contains(outputName, StringComparison.OrdinalIgnoreCase)
-        || name.Contains(outputName, StringComparison.OrdinalIgnoreCase);
+        MatchesOutputName(channel, outputName) || MatchesOutputName(name, outputName);
+
+    private static bool MatchesOutputName(string value, string outputName)
+    {
+        if (string.IsNullOrWhiteSpace(outputName)) return false;
+        value = value.Trim();
+        // NDI uses "HOST (channel)"; Arena may prefix its channel with "Arena - ".
+        // Substring matching would reuse KV-0010 when configuring KV-001.
+        return value.Equals(outputName, StringComparison.OrdinalIgnoreCase)
+            || value.Equals($"Arena - {outputName}", StringComparison.OrdinalIgnoreCase)
+            || value.EndsWith($" ({outputName})", StringComparison.OrdinalIgnoreCase)
+            || value.EndsWith($" (Arena - {outputName})", StringComparison.OrdinalIgnoreCase);
+    }
 
     private static bool TryGetHost(string value, out string host)
     {
@@ -494,7 +541,8 @@ public sealed class KiloviewDecoderPresetService
     }
 }
 
-public sealed record N60PresetSummary(int Id, string ChannelName, string Name, string Color, bool IsEmpty);
+public sealed record N60PresetSummary(int Id, string ChannelName, string Name, string Color, bool IsEmpty, string SourceUrl = "");
+public sealed record N60DecoderDiagnostic(string DecoderName, IReadOnlyList<N60PresetSummary> Presets, string CurrentName, string CurrentUrl);
 public sealed record N6PresetSummary(int Id, string StreamName, string StreamUrl = "");
 public sealed record N6DecoderDiagnostic(
     string DecoderName,

@@ -22,22 +22,19 @@ public sealed class ArenaConfigurationOrchestrator
         if (!product.Name.Equals("Arena", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException($"Resolume Arena is required; the webserver reported {product.Name}.");
         Report($"Connected to {product}.");
+        await new KiloviewDecoderPresetService().ValidateConnectionsAsync(plan.Decoders, ct);
+        Report($"Verified login and preset capacity for all {plan.Decoders.Count} decoders.");
 
         Directory.CreateDirectory(plan.CompositionDirectory);
         var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss-fff");
         var groupNamesInBackToFrontOrder = plan.Decoders.Select(d => d.OutputName).Concat(new[] { "LED Wall", "Show" }).ToArray();
-        if (groupNamesInBackToFrontOrder.Distinct(StringComparer.OrdinalIgnoreCase).Count() != groupNamesInBackToFrontOrder.Length)
-            throw new InvalidOperationException("Decoder names must be unique and cannot be named Show or LED Wall.");
-
-        var initial = await api.GetCompositionStateAsync(ct);
+        var initial = await new ArenaCompositionSynchronizationService().EnsureCurrentAsync(api, plan.CompositionDirectory, progress, ct);
+        ValidateInitialComposition(initial, groupNamesInBackToFrontOrder.Length);
         var targetColumnCount = Math.Max(plan.TotalColumnCount, initial.ColumnIds.Count);
         await api.UpdateCompositionAsync(plan.CompositionName, plan.CompositionWidth, plan.CompositionHeight, ct);
         await api.GrowCompositionAsync(targetColumnCount, ct);
         var working = await api.GetCompositionStateAsync(ct);
-        if (working.Groups.Count > groupNamesInBackToFrontOrder.Length)
-            throw new InvalidOperationException($"The open composition has {working.Groups.Count} groups but this job requires {groupNamesInBackToFrontOrder.Length}; Arena 7.27 cannot delete the surplus groups through its REST API.");
-        if (working.Layers.Count > groupNamesInBackToFrontOrder.Length * 3)
-            throw new InvalidOperationException($"The open composition has {working.Layers.Count} layers but this job uses {groupNamesInBackToFrontOrder.Length * 3}; Arena 7.27 cannot delete the surplus layers through its REST API.");
+        ValidateInitialComposition(working, groupNamesInBackToFrontOrder.Length);
         Report($"Overwriting the open composition at {plan.CompositionWidth} × {plan.CompositionHeight}; preserving its {initial.ColumnIds.Count} existing columns and ensuring {targetColumnCount} total.");
 
         var targetGroupIds = working.Groups.Select(group => group.Id).ToList();
@@ -173,9 +170,8 @@ public sealed class ArenaConfigurationOrchestrator
             throw new InvalidOperationException($"Arena reloaded {reloadedStructure.ColumnIds.Count} columns; expected exactly {targetColumnCount}.");
 
         // Apply and verify every live clip state before the final save. These
-        // settings and refreshed thumbnails are retained in the AVC across the
-        // Arena restart, so they must not be redundantly driven through the API
-        // from the process that launched the replacement Arena instance.
+        // settings are also restored by the fresh helper after restart because
+        // Arena does not persist every live router setting in the AVC.
         var ndiClipIds = new List<long>();
         if (plan.AutoPlaceNdiSources)
         {
@@ -234,7 +230,8 @@ public sealed class ArenaConfigurationOrchestrator
         // leave a localhost request bound to the retired listener even after
         // the new Arena server is responding to other processes.
         api.Dispose();
-        await new ArenaRestartService().RestartAsync(compositionFile, safeCompositionName, progress, ct);
+        await new ArenaRestartService().RestartAsync(compositionFile, plan.CompositionName, progress, ct,
+            plan.SourceStartColumn, plan.AutoPlaceNdiSources ? plan.Encoders.Count : 0);
         Report("Arena restart initiated. Decoder activation will report back in the main window.");
         return new ConfigurationResult(compositionFile, presetFile, null, log, []);
     }
@@ -254,6 +251,21 @@ public sealed class ArenaConfigurationOrchestrator
 
     public static void ValidatePlan(ConfigurationPlan plan)
     {
+        if (string.IsNullOrWhiteSpace(plan.CompositionName))
+            throw new InvalidOperationException("Composition name is empty.");
+        if (plan.CompositionWidth is < 320 or > 32768 || plan.CompositionHeight is < 240 or > 32768)
+            throw new InvalidOperationException("The composition resolution is invalid.");
+        if (plan.Decoders.Count == 0)
+            throw new InvalidOperationException("No onboarded decoders were found.");
+        if (plan.Decoders.Any(decoder => decoder.Width is < 320 or > 32768 || decoder.Height is < 240 or > 32768))
+            throw new InvalidOperationException("A decoder resolution is invalid.");
+        if (plan.Decoders.Any(decoder => decoder.Device.Credentials is null))
+            throw new InvalidOperationException("Saved decoder credentials are missing from NDI Job Configurator.");
+        var groupNames = plan.Decoders.Select(decoder => decoder.OutputName.Trim()).Concat(new[] { "LED Wall", "Show" }).ToArray();
+        if (groupNames.Any(string.IsNullOrWhiteSpace) || groupNames.Distinct(StringComparer.OrdinalIgnoreCase).Count() != groupNames.Length)
+            throw new InvalidOperationException("Decoder names must be nonempty, unique, and cannot be named Show or LED Wall.");
+        if (plan.AutoPlaceNdiSources && (plan.Encoders.Count == 0 || plan.Encoders.Any(encoder => string.IsNullOrWhiteSpace(encoder.ArenaSourceToken))))
+            throw new InvalidOperationException("Automatic placement requires at least one encoder and a matched source for every encoder.");
         if (plan.TotalColumnCount is < MinimumColumnCount or > MaximumColumnCount)
             throw new InvalidOperationException($"Column count must be between {MinimumColumnCount} and {MaximumColumnCount}.");
         if (plan.SourceStartColumn is < 1 || plan.SourceStartColumn > plan.TotalColumnCount)
@@ -262,6 +274,14 @@ public sealed class ArenaConfigurationOrchestrator
             throw new InvalidOperationException("Frame rate must be 50 or 60 fps.");
         if (GetRouterColumnIndex(plan) >= plan.TotalColumnCount)
             throw new InvalidOperationException($"The selected source starting column and {plan.Encoders.Count} encoder feeds leave no column for the Video Router.");
+    }
+
+    internal static void ValidateInitialComposition(ArenaCompositionState state, int targetGroupCount)
+    {
+        if (state.Groups.Count > targetGroupCount)
+            throw new InvalidOperationException($"The open composition has {state.Groups.Count} groups but this job requires {targetGroupCount}; Arena 7.27 cannot delete the surplus groups through its REST API.");
+        if (state.Layers.Count > targetGroupCount * 3)
+            throw new InvalidOperationException($"The open composition has {state.Layers.Count} layers but this job uses {targetGroupCount * 3}; Arena 7.27 cannot delete the surplus layers through its REST API.");
     }
 
     public static void SetCompositionFrameRate(string path, int framesPerSecond)
