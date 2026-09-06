@@ -1,5 +1,11 @@
 # Job Configurator interoperability
 
+## QA follow-up — 6 September 2026
+
+The restart worker checks local PC Agent/NDI readiness as well as the expected job identity. After waiting for Arena's saved composition to reopen, it revalidates before restoration writes. The API client also validates immediately before each mutating request, covering internal clip-loading waits during both initial configuration and restoration. Decoder configuration revalidates after source discovery and before each preset replacement/addition and activation request.
+
+A changed job, NDI drift or unavailable local Agent stops further writes. Earlier completed writes can remain; use the existing composition backup and operation log to recover partial work. Tests simulate restart delay, internal clip delay, changed job, changed Discovery setting, unavailable Agent, and N6/N60 source lookup boundaries without contacting Arena or hardware.
+
 Resolume Configurator remains an independent Arena client. Job Configurator, KiloLink and NDI Discovery may run elsewhere. The Arena PC must participate in the intended job through its local PC Agent; it does not need local server components.
 
 Before changing Arena, the plan requires the selected Job Configurator's schema-1 server ID, job ID and revision. Old servers without that identity must be updated. Configuration is revalidated before mutation and around later phases; the restart helper carries the expected identity and checks it before restoration and each decoder. Same-name replacement, a different server or a changed device configuration requires reloading and reviewing the plan.
@@ -13,4 +19,3 @@ Arena composition backups remain under `Configurator Backups`. A failure after m
 Ports: Job Configurator TCP 8091, local Agent TCP 8094, Discovery TCP 5959 and Arena TCP 8080. Keep these distinct on combined hosts.
 
 Run `dotnet run --project tests/ResolumeConfigurator.Tests/ResolumeConfigurator.Tests.csproj` for isolated validation, including identity, credentials, NDI readiness and restart arguments. The suite workspace's HTTP fixture can additionally exercise this reader against a real isolated Job Configurator process. Real Arena/NDI/device operation still needs controlled hardware acceptance.
-

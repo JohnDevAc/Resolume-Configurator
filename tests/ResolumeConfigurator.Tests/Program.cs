@@ -84,6 +84,8 @@ var tests = new (string Name, Action Test)[]
     ("job credential selection", RegressionTests.JobCredentialSelection),
     ("job revision and local NDI readiness", RegressionTests.InteropReadiness),
     ("post-restart clip restoration", RegressionTests.RestartClipRestoration),
+    ("restart waits revalidate job and local NDI before writes", () => MutationBoundaryTests.RestartAsync().GetAwaiter().GetResult()),
+    ("N6 and N60 discovery waits revalidate before writes", () => MutationBoundaryTests.DecoderAsync().GetAwaiter().GetResult()),
     ("stale Arena composition detection", RegressionTests.StaleArenaComposition),
     ("local configurator startup", () => StartupDiscoveryTests.LocalInstanceAsync().GetAwaiter().GetResult()),
     ("multiple network configurators", () => StartupDiscoveryTests.AllNetworkInstancesAsync().GetAwaiter().GetResult()),

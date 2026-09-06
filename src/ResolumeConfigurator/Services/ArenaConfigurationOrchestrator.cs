@@ -15,6 +15,11 @@ public sealed class ArenaConfigurationOrchestrator
         var log = new List<string>();
         void Report(string message) { log.Add(message); progress?.Report(message); }
         using var api = new ResolumeApiClient();
+        api.BeforeMutation = async token =>
+        {
+            var current = await JobRevisionGuard.RefreshAsync(plan.ConfiguratorUrl, plan.ExpectedJob, token);
+            await LocalNdiReadinessService.ValidateAsync(current, token);
+        };
         ValidatePlan(plan);
         var job = await JobRevisionGuard.RefreshAsync(plan.ConfiguratorUrl, plan.ExpectedJob, ct);
         await LocalNdiReadinessService.ValidateAsync(job, ct);

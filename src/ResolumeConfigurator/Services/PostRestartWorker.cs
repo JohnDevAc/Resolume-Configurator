@@ -5,6 +5,17 @@ namespace ResolumeConfigurator.Services;
 
 public sealed class PostRestartWorker
 {
+    private readonly Func<IPostRestartArenaApi> _createApi;
+    private readonly Func<TimeSpan, CancellationToken, Task> _delay;
+
+    public PostRestartWorker() : this(() => new ResolumeApiClient(timeout: TimeSpan.FromSeconds(8)), Task.Delay) { }
+
+    internal PostRestartWorker(Func<IPostRestartArenaApi> createApi, Func<TimeSpan, CancellationToken, Task> delay)
+    {
+        _createApi = createApi;
+        _delay = delay;
+    }
+
     public async Task<IReadOnlyList<DecoderPresetResult>> RunAsync(string expectedJobName, CancellationToken ct,
         PostRestartComposition? restoration = null, string? configuratorUrl = null, JobIdentity? expectedJob = null)
     {
@@ -14,6 +25,7 @@ public sealed class PostRestartWorker
         await Task.Delay(TimeSpan.FromSeconds(15), ct).ConfigureAwait(false);
 
         var snapshot = await JobRevisionGuard.RefreshAsync(configuratorUrl, expectedJob, ct).ConfigureAwait(false);
+        await LocalNdiReadinessService.ValidateAsync(snapshot, ct).ConfigureAwait(false);
         if (!snapshot.JobName.Trim().Equals(expectedJobName.Trim(), StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException($"NDI Job Configurator changed from '{expectedJobName}' to '{snapshot.JobName}' during Arena restart.");
 
@@ -35,18 +47,25 @@ public sealed class PostRestartWorker
         if (decoders.Any(decoder => decoder.Device.Credentials is null))
             throw new InvalidOperationException("Saved decoder credentials are missing from NDI Job Configurator.");
 
-        if (restoration is not null)
-            await RestoreCompositionAsync(expectedJobName, decoders.Select(decoder => decoder.OutputName).ToArray(), restoration, ct).ConfigureAwait(false);
+        async Task ValidateCurrentAsync(CancellationToken token)
+        {
+            var current = await JobRevisionGuard.RefreshAsync(configuratorUrl, expectedJob, token).ConfigureAwait(false);
+            await LocalNdiReadinessService.ValidateAsync(current, token).ConfigureAwait(false);
+        }
 
-        await JobRevisionGuard.RefreshAsync(configuratorUrl, expectedJob, ct).ConfigureAwait(false);
+        if (restoration is not null)
+            await RestoreCompositionAsync(expectedJobName, decoders.Select(decoder => decoder.OutputName).ToArray(), restoration, ct, ValidateCurrentAsync).ConfigureAwait(false);
+
         return await new KiloviewDecoderPresetService().ConfigureAsync(decoders, null, ct,
-            async token => { await JobRevisionGuard.RefreshAsync(configuratorUrl, expectedJob, token).ConfigureAwait(false); }).ConfigureAwait(false);
+            ValidateCurrentAsync).ConfigureAwait(false);
     }
 
     public async Task RestoreCompositionAsync(string expectedJobName, IReadOnlyList<string> decoderNames,
-        PostRestartComposition restoration, CancellationToken ct)
+        PostRestartComposition restoration, CancellationToken ct, Func<CancellationToken, Task> validateCurrent)
     {
-        using var api = new ResolumeApiClient(timeout: TimeSpan.FromSeconds(8));
+        ArgumentNullException.ThrowIfNull(validateCurrent);
+        using var api = _createApi();
+        api.BeforeMutation = validateCurrent;
         ArenaCompositionState? state = null;
         var deadline = DateTime.UtcNow.AddSeconds(60);
         var filename = Path.GetFileNameWithoutExtension(restoration.CompositionFile);
@@ -64,18 +83,29 @@ public sealed class PostRestartWorker
                 }
             }
             catch (Exception ex) when (!ct.IsCancellationRequested && (ex is HttpRequestException or OperationCanceledException)) { }
-            await Task.Delay(500, ct).ConfigureAwait(false);
+            await _delay(TimeSpan.FromMilliseconds(500), ct).ConfigureAwait(false);
         }
         if (state is null) throw new InvalidOperationException("Arena did not reopen the saved job composition after restart.");
 
         var clips = ResolveRestorationClips(state, decoderNames, restoration.SourceStartColumn, restoration.SourceCount);
-        foreach (var clipId in clips.NdiClipIds) await api.ConfigureClipFitAsync(clipId, ct).ConfigureAwait(false);
+        foreach (var clipId in clips.NdiClipIds)
+        {
+            await validateCurrent(ct).ConfigureAwait(false);
+            await api.ConfigureClipFitAsync(clipId, ct).ConfigureAwait(false);
+        }
         foreach (var clipId in clips.RouterClipIds)
         {
+            await validateCurrent(ct).ConfigureAwait(false);
             await api.ConfigureVideoRouterFitAsync(clipId, ct).ConfigureAwait(false);
+            await validateCurrent(ct).ConfigureAwait(false);
             await api.ConnectClipAsync(clipId, ct).ConfigureAwait(false);
         }
-        foreach (var clipId in clips.NdiClipIds) await api.UpdateClipThumbnailAsync(clipId, ct).ConfigureAwait(false);
+        foreach (var clipId in clips.NdiClipIds)
+        {
+            await validateCurrent(ct).ConfigureAwait(false);
+            await api.UpdateClipThumbnailAsync(clipId, ct).ConfigureAwait(false);
+        }
+        await validateCurrent(ct).ConfigureAwait(false);
         await api.SaveCompositionAsync(restoration.CompositionFile, ct).ConfigureAwait(false);
     }
 

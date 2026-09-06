@@ -8,14 +8,17 @@ using ResolumeConfigurator.Models;
 
 namespace ResolumeConfigurator.Services;
 
-public sealed class ResolumeApiClient : IDisposable
+public sealed class ResolumeApiClient : IPostRestartArenaApi
 {
     private readonly HttpClient _http;
+    public Func<CancellationToken, Task>? BeforeMutation { get; set; }
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { PropertyNameCaseInsensitive = true };
 
-    public ResolumeApiClient(string baseAddress = "http://127.0.0.1:8080/api/v1/", TimeSpan? timeout = null)
+    public ResolumeApiClient(string baseAddress = "http://127.0.0.1:8080/api/v1/", TimeSpan? timeout = null, HttpMessageHandler? handler = null)
     {
-        _http = new HttpClient { BaseAddress = new Uri(baseAddress), Timeout = timeout ?? TimeSpan.FromSeconds(60) };
+        _http = handler is null ? new HttpClient() : new HttpClient(handler);
+        _http.BaseAddress = new Uri(baseAddress);
+        _http.Timeout = timeout ?? TimeSpan.FromSeconds(60);
         // Arena is deliberately killed and relaunched during one app workflow.
         // Do not retain keep-alive sockets belonging to the previous process;
         // a stale accepted connection can otherwise outlive the old listener
@@ -470,18 +473,21 @@ public sealed class ResolumeApiClient : IDisposable
 
     private async Task PutJsonAsync<T>(string uri, T value, CancellationToken ct)
     {
+        if (BeforeMutation is not null) await BeforeMutation(ct);
         using var response = await _http.PutAsJsonAsync(uri, value, JsonOptions, ct);
         await EnsureSuccessAsync(response, $"update {uri}", ct);
     }
 
     private async Task PostJsonAsync<T>(string uri, T value, CancellationToken ct)
     {
+        if (BeforeMutation is not null) await BeforeMutation(ct);
         using var response = await _http.PostAsJsonAsync(uri, value, JsonOptions, ct);
         await EnsureSuccessAsync(response, $"update {uri}", ct);
     }
 
     private async Task PostAsync(string uri, string? body, string? contentType, CancellationToken ct)
     {
+        if (BeforeMutation is not null) await BeforeMutation(ct);
         using var content = body is null ? null : new StringContent(body, Encoding.UTF8, contentType ?? "text/plain");
         using var response = await _http.PostAsync(uri, content, ct);
         await EnsureSuccessAsync(response, $"update {uri}", ct);
@@ -489,6 +495,7 @@ public sealed class ResolumeApiClient : IDisposable
 
     private async Task DeleteAsync(string uri, CancellationToken ct)
     {
+        if (BeforeMutation is not null) await BeforeMutation(ct);
         using var response = await _http.DeleteAsync(uri, ct);
         await EnsureSuccessAsync(response, $"delete {uri}", ct);
     }

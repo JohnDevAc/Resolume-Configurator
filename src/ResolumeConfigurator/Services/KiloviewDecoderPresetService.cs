@@ -9,6 +9,10 @@ namespace ResolumeConfigurator.Services;
 public sealed class KiloviewDecoderPresetService
 {
     private const int N6PresetCapacity = 10;
+    private readonly Func<DecoderRow, bool, CancellationToken, Task<HttpClient>> _authorize;
+
+    public KiloviewDecoderPresetService() : this((decoder, n60, ct) => n60 ? AuthorizeN60Async(decoder, ct) : AuthorizeN6Async(decoder, ct)) { }
+    internal KiloviewDecoderPresetService(Func<DecoderRow, bool, CancellationToken, Task<HttpClient>> authorize) => _authorize = authorize;
 
     public async Task ValidateConnectionsAsync(IReadOnlyList<DecoderRow> decoders, CancellationToken ct)
     {
@@ -50,8 +54,8 @@ public sealed class KiloviewDecoderPresetService
             var isN60 = decoder.Device.Family.Contains("N60", StringComparison.OrdinalIgnoreCase)
                 || decoder.Device.Model.Contains("N60", StringComparison.OrdinalIgnoreCase);
             var result = isN60
-                ? await ConfigureN60Async(decoder, ct)
-                : await ConfigureN6Async(decoder, ct);
+                ? await ConfigureN60Async(decoder, ct, validateJob)
+                : await ConfigureN6Async(decoder, ct, validateJob);
             results.Add(result);
             progress?.Report($"{decoder.OutputName}: {(result.ReusedExistingSlot ? "updated existing" : "added to")} {result.Family} preset slot {result.Slot} and activated it.");
         }
@@ -171,9 +175,9 @@ public sealed class KiloviewDecoderPresetService
             String(data, "channel_name", String(data, "name")), String(data, "original_url", String(data, "url", String(data, "ip"))));
     }
 
-    private static async Task<DecoderPresetResult> ConfigureN60Async(DecoderRow decoder, CancellationToken ct)
+    private async Task<DecoderPresetResult> ConfigureN60Async(DecoderRow decoder, CancellationToken ct, Func<CancellationToken, Task>? validateJob)
     {
-        using var client = await AuthorizeN60Async(decoder, ct);
+        using var client = await _authorize(decoder, true, ct);
         using var presetsDocument = await GetJsonAsync(client, "/api/codec/preset/get", "read N60 presets", ct);
         var presets = Data(presetsDocument.RootElement).EnumerateArray().Select(element => new N60PresetSummary(
             Number(element, "id"),
@@ -184,10 +188,12 @@ public sealed class KiloviewDecoderPresetService
         var slot = SelectN60Slot(presets, decoder.OutputName, out var reused);
         var source = await FindN60SourceAsync(client, decoder.OutputName, ct);
 
+        if (validateJob is not null) await validateJob(ct);
         if (reused)
             using (await PostJsonAsync(client, "/api/codec/preset/remove", new { id = slot }, $"replace N60 preset {slot}", ct)) { }
 
         var sourceUrl = String(source, "original_url", String(source, "url"));
+        if (validateJob is not null) await validateJob(ct);
         using (await PostJsonAsync(client, "/api/codec/preset/add", new
         {
             position = slot,
@@ -203,6 +209,7 @@ public sealed class KiloviewDecoderPresetService
             type = "ndi"
         }, $"add Arena output to N60 preset {slot}", ct)) { }
 
+        if (validateJob is not null) await validateJob(ct);
         using (await PostJsonAsync(client, "/api/codec/decode/add", new { id = slot }, $"activate N60 preset {slot}", ct, allowEmptyResult: true)) { }
 
         using var verifiedPresets = await GetJsonAsync(client, "/api/codec/preset/get", "verify N60 preset", ct);
@@ -213,9 +220,9 @@ public sealed class KiloviewDecoderPresetService
         return new DecoderPresetResult(decoder.OutputName, "N60", slot, reused);
     }
 
-    private static async Task<DecoderPresetResult> ConfigureN6Async(DecoderRow decoder, CancellationToken ct)
+    private async Task<DecoderPresetResult> ConfigureN6Async(DecoderRow decoder, CancellationToken ct, Func<CancellationToken, Task>? validateJob)
     {
-        using var client = await AuthorizeN6Async(decoder, ct);
+        using var client = await _authorize(decoder, false, ct);
         using var presetsDocument = await GetJsonAsync(client, "/api/preview/get", "read N6 presets", ct);
         var presetElements = N6Positions(presetsDocument.RootElement).Select(element => element.Clone()).ToArray();
         var presets = presetElements
@@ -236,6 +243,7 @@ public sealed class KiloviewDecoderPresetService
 
         if (!alreadyCurrent)
         {
+            if (validateJob is not null) await validateJob(ct);
             object destination = reused
                 ? new { type = "preview", stream_id = streamId, stream_name = streamName, stream_url = streamUrl, pos_id = slot }
                 : new { type = "preview", stream_id = streamId, stream_name = streamName, stream_url = streamUrl };
@@ -258,6 +266,7 @@ public sealed class KiloviewDecoderPresetService
                     : $"{decoder.OutputName} was not retained in a new N6 preset slot.");
         }
 
+        if (validateJob is not null) await validateJob(ct);
         try
         {
             using (await PostJsonAsync(client, "/api/decoder/current/set.json", new { name = streamName, url = streamUrl }, $"activate N6 preset {slot}", ct)) { }
