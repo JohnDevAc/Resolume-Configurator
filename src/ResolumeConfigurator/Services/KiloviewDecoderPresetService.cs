@@ -21,9 +21,8 @@ public sealed class KiloviewDecoderPresetService
             if (decoder.Device.Credentials is null) throw new InvalidOperationException($"Saved credentials are missing for {decoder.OutputName}.");
             try
             {
-                var isN60 = decoder.Device.Family.Contains("N60", StringComparison.OrdinalIgnoreCase)
-                    || decoder.Device.Model.Contains("N60", StringComparison.OrdinalIgnoreCase);
-                using var client = isN60 ? await AuthorizeN60Async(decoder, ct) : await AuthorizeN6Async(decoder, ct);
+                var isN60 = IsN60Device(decoder.Device);
+                using var client = await _authorize(decoder, isN60, ct);
                 using var presets = await GetJsonAsync(client, isN60 ? "/api/codec/preset/get" : "/api/preview/get", "check decoder preset access", ct);
                 if (isN60)
                     SelectN60Slot(Data(presets.RootElement).EnumerateArray().Select(item => new N60PresetSummary(
@@ -42,8 +41,13 @@ public sealed class KiloviewDecoderPresetService
         IReadOnlyList<DecoderRow> decoders,
         IProgress<string>? progress,
         CancellationToken ct,
-        Func<CancellationToken, Task>? validateJob = null)
+        Func<CancellationToken, Task>? validateJob = null,
+        string? expectedSenderAddress = null)
     {
+        if (!IPAddress.TryParse(expectedSenderAddress, out var sender) || sender.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork
+            || IPAddress.IsLoopback(sender))
+            throw new InvalidOperationException("A verified local PC Agent production IPv4 address is required to select Arena outputs.");
+        expectedSenderAddress = sender.ToString();
         var results = new List<DecoderPresetResult>();
         foreach (var decoder in decoders)
         {
@@ -51,11 +55,16 @@ public sealed class KiloviewDecoderPresetService
             if (decoder.Device.Credentials is null)
                 throw new InvalidOperationException($"NDI Job Configurator has no saved credentials for decoder {decoder.OutputName} ({decoder.IpAddress}).");
 
-            var isN60 = decoder.Device.Family.Contains("N60", StringComparison.OrdinalIgnoreCase)
-                || decoder.Device.Model.Contains("N60", StringComparison.OrdinalIgnoreCase);
-            var result = isN60
-                ? await ConfigureN60Async(decoder, ct, validateJob)
-                : await ConfigureN6Async(decoder, ct, validateJob);
+            var isN60 = IsN60Device(decoder.Device);
+            DecoderPresetResult result;
+            try
+            {
+                result = isN60
+                    ? await ConfigureN60Async(decoder, expectedSenderAddress, ct, validateJob)
+                    : await ConfigureN6Async(decoder, expectedSenderAddress, ct, validateJob);
+            }
+            catch (OperationCanceledException ex) when (!ct.IsCancellationRequested)
+            { throw new TimeoutException($"{decoder.OutputName}: a decoder API, sender discovery (35 seconds), or activation verification (15 seconds) deadline expired.", ex); }
             results.Add(result);
             progress?.Report($"{decoder.OutputName}: {(result.ReusedExistingSlot ? "updated existing" : "added to")} {result.Family} preset slot {result.Slot} and activated it.");
         }
@@ -175,7 +184,7 @@ public sealed class KiloviewDecoderPresetService
             String(data, "channel_name", String(data, "name")), String(data, "original_url", String(data, "url", String(data, "ip"))));
     }
 
-    private async Task<DecoderPresetResult> ConfigureN60Async(DecoderRow decoder, CancellationToken ct, Func<CancellationToken, Task>? validateJob)
+    private async Task<DecoderPresetResult> ConfigureN60Async(DecoderRow decoder, string expectedSenderAddress, CancellationToken ct, Func<CancellationToken, Task>? validateJob)
     {
         using var client = await _authorize(decoder, true, ct);
         using var presetsDocument = await GetJsonAsync(client, "/api/codec/preset/get", "read N60 presets", ct);
@@ -186,7 +195,7 @@ public sealed class KiloviewDecoderPresetService
             String(element, "color"),
             IsN60PresetEmpty(element))).ToArray();
         var slot = SelectN60Slot(presets, decoder.OutputName, out var reused);
-        var source = await FindN60SourceAsync(client, decoder.OutputName, ct);
+        var source = await FindN60SourceAsync(client, decoder.OutputName, expectedSenderAddress, ct);
 
         if (validateJob is not null) await validateJob(ct);
         if (reused)
@@ -220,7 +229,7 @@ public sealed class KiloviewDecoderPresetService
         return new DecoderPresetResult(decoder.OutputName, "N60", slot, reused);
     }
 
-    private async Task<DecoderPresetResult> ConfigureN6Async(DecoderRow decoder, CancellationToken ct, Func<CancellationToken, Task>? validateJob)
+    private async Task<DecoderPresetResult> ConfigureN6Async(DecoderRow decoder, string expectedSenderAddress, CancellationToken ct, Func<CancellationToken, Task>? validateJob)
     {
         using var client = await _authorize(decoder, false, ct);
         using var presetsDocument = await GetJsonAsync(client, "/api/preview/get", "read N6 presets", ct);
@@ -229,7 +238,7 @@ public sealed class KiloviewDecoderPresetService
             .Select(element => new N6PresetSummary(Number(element, "id"), String(element, "stream_name"), String(element, "stream_url", String(element, "url"))))
             .ToArray();
         var slot = SelectN6Slot(presets, decoder.OutputName, out var reused);
-        var source = await FindN6SourceAsync(client, decoder.OutputName, decoder.IpAddress, ct);
+        var source = await FindN6SourceAsync(client, decoder.OutputName, expectedSenderAddress, ct);
 
         var streamId = String(source, "id");
         var streamName = String(source, "name", decoder.OutputName);
@@ -336,37 +345,31 @@ public sealed class KiloviewDecoderPresetService
         }
     }
 
-    private static async Task<JsonElement> FindN60SourceAsync(HttpClient client, string outputName, CancellationToken ct)
+    private static async Task<JsonElement> FindN60SourceAsync(HttpClient client, string outputName, string expectedSenderAddress, CancellationToken ct)
     {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(TimeSpan.FromSeconds(35));
+        ct = deadline.Token;
         for (var attempt = 0; attempt < 40; attempt++)
         {
             if (attempt > 0) await Task.Delay(750, ct);
             using var discovery = await GetJsonAsync(client, "/api/codec/discovery/scan", "discover Arena NDI output on N60", ct);
-            var match = Flatten(Data(discovery.RootElement))
-                .Where(source => OutputSourceScore(source, outputName) > 0)
-                .OrderByDescending(source => OutputSourceScore(source, outputName))
-                .ThenByDescending(source => Number(source, "port", Number(source, "listener_port")))
-                .FirstOrDefault();
+            var match = SelectOutputSource(Flatten(Data(discovery.RootElement)), outputName, expectedSenderAddress);
             if (match.ValueKind == JsonValueKind.Object) return match.Clone();
         }
         throw new InvalidOperationException($"The N60 decoder could not discover Arena's NDI output '{outputName}'. Confirm the Advanced Output NDI screen is enabled.");
     }
 
-    private static async Task<JsonElement> FindN6SourceAsync(HttpClient client, string outputName, string decoderIpAddress, CancellationToken ct)
+    private static async Task<JsonElement> FindN6SourceAsync(HttpClient client, string outputName, string expectedSenderAddress, CancellationToken ct)
     {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(TimeSpan.FromSeconds(35));
+        ct = deadline.Token;
         for (var attempt = 0; attempt < 40; attempt++)
         {
             if (attempt > 0) await Task.Delay(750, ct);
             using var discovery = await PostJsonAsync(client, "/api/source/groups/list", new { is_need_stream = true, show_template = false }, "discover Arena NDI output on N6", ct);
-            var match = N6Streams(discovery.RootElement)
-                // Every N6 decoder advertises its own "Decoding Channel" using
-                // the decoder hostname. It is not the similarly named Arena AO
-                // sender and must never win the output-name match.
-                .Where(source => !String(source, "address").Equals(decoderIpAddress, StringComparison.OrdinalIgnoreCase))
-                .Where(source => OutputSourceScore(source, outputName) > 0)
-                .OrderByDescending(source => OutputSourceScore(source, outputName))
-                .ThenByDescending(source => Number(source, "listener_port"))
-                .FirstOrDefault();
+            var match = SelectOutputSource(N6Streams(discovery.RootElement), outputName, expectedSenderAddress);
             if (match.ValueKind == JsonValueKind.Object) return match.Clone();
         }
         throw new InvalidOperationException($"The N6 decoder could not discover Arena's NDI output '{outputName}'. Confirm the Advanced Output NDI screen is enabled.");
@@ -374,19 +377,24 @@ public sealed class KiloviewDecoderPresetService
 
     private static async Task VerifyN60CurrentAsync(HttpClient client, string outputName, string sourceUrl, CancellationToken ct)
     {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(TimeSpan.FromSeconds(15));
+        ct = deadline.Token;
         for (var attempt = 0; attempt < 12; attempt++)
         {
             if (attempt > 0) await Task.Delay(500, ct);
             using var current = await GetJsonAsync(client, "/api/codec/decode/get", "verify N60 active output", ct);
             var data = Data(current.RootElement);
-            if (MatchesOutput(String(data, "channel_name"), String(data, "name"), outputName)
-                || SameUrl(data, sourceUrl)) return;
+            if (IsActiveN60Source(data, outputName, sourceUrl)) return;
         }
         throw new InvalidOperationException($"The N60 decoder did not activate Arena output '{outputName}'.");
     }
 
     private static async Task VerifyN6CurrentAsync(HttpClient client, string outputName, string sourceUrl, CancellationToken ct)
     {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(TimeSpan.FromSeconds(15));
+        ct = deadline.Token;
         for (var attempt = 0; attempt < 12; attempt++)
         {
             if (attempt > 0) await Task.Delay(500, ct);
@@ -414,6 +422,28 @@ public sealed class KiloviewDecoderPresetService
     {
         var value = String(data, "original_url", String(data, "url", String(data, "ip")));
         return !string.IsNullOrWhiteSpace(value) && value.Equals(sourceUrl, StringComparison.OrdinalIgnoreCase);
+    }
+
+    internal static bool IsActiveN60Source(JsonElement data, string outputName, string sourceUrl) =>
+        MatchesOutput(String(data, "channel_name"), String(data, "name"), outputName) && SameUrl(data, sourceUrl);
+
+    internal static JsonElement SelectOutputSource(IEnumerable<JsonElement> sources, string outputName, string senderAddress)
+    {
+        var matches = sources.Where(source => OutputSourceScore(source, outputName) > 0)
+            .Where(source => TryGetHost(String(source, "original_url", String(source, "url")), out var host)
+                && host.Equals(senderAddress, StringComparison.OrdinalIgnoreCase))
+            .GroupBy(source => String(source, "original_url", String(source, "url")), StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First()).ToArray();
+        if (matches.Length > 1)
+            throw new InvalidOperationException($"Several senders on {senderAddress} advertise '{outputName}'. Resolve the duplicate Arena outputs before configuring decoders.");
+        return matches.FirstOrDefault();
+    }
+
+    internal static bool IsN60Device(JobDevice device)
+    {
+        if (device.Family.Equals("N60", StringComparison.OrdinalIgnoreCase)) return true;
+        if (device.Family.Equals("N6", StringComparison.OrdinalIgnoreCase)) return false;
+        throw new InvalidOperationException($"{device.Hostname} uses unsupported decoder family '{device.Family}'. Only Kiloview N6 and N60 are supported.");
     }
 
     private static int OutputSourceScore(JsonElement source, string outputName)

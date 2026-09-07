@@ -9,6 +9,14 @@ public sealed class AdvancedOutputActivator
         if (!File.Exists(presetFile)) throw new FileNotFoundException("The generated Advanced Output preset was not found.", presetFile);
 
         var preset = XDocument.Load(presetFile);
+        var active = CreateActiveDocument(preset, expectedScreens);
+        await AtomicFile.WriteXmlAsync(preferenceFile, active, ct, backup: true);
+        if (!PreferenceMatches(preferenceFile, expectedScreens))
+            throw new IOException("Arena's active Advanced Output XML could not be verified after writing it.");
+    }
+
+    internal static XDocument CreateActiveDocument(XDocument preset, IReadOnlyCollection<string> expectedScreens)
+    {
         var setup = preset.Root?.Name.LocalName == "XmlState"
             ? preset.Root.Element("ScreenSetup")
             : preset.Root?.Name.LocalName == "ScreenSetup" ? preset.Root : null;
@@ -27,29 +35,7 @@ public sealed class AdvancedOutputActivator
         if (actualScreens.Count != expectedScreens.Count || !expectedScreens.All(actualScreens.Contains))
             throw new InvalidDataException("The active Advanced Output state does not contain the expected screens.");
 
-        var directory = Path.GetDirectoryName(preferenceFile)
-            ?? throw new InvalidOperationException("Arena's Preferences directory could not be determined.");
-        Directory.CreateDirectory(directory);
-        if (File.Exists(preferenceFile))
-        {
-            var backup = preferenceFile + ".before-configurator-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".bak";
-            File.Copy(preferenceFile, backup, false);
-        }
-
-        var temporary = Path.Combine(directory, $"AdvancedOutput.{Guid.NewGuid():N}.tmp");
-        try
-        {
-            await using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.Read))
-                await new XDocument(new XDeclaration("1.0", "utf-8", null), activeSetup).SaveAsync(stream, SaveOptions.None, ct);
-            File.Move(temporary, preferenceFile, true);
-        }
-        finally
-        {
-            if (File.Exists(temporary)) File.Delete(temporary);
-        }
-
-        if (!PreferenceMatches(preferenceFile, expectedScreens))
-            throw new IOException("Arena's active Advanced Output XML could not be verified after writing it.");
+        return new XDocument(new XDeclaration("1.0", "utf-8", null), activeSetup);
     }
 
     public static bool PreferenceMatches(string preferenceFile, IReadOnlyCollection<string> expectedScreens)

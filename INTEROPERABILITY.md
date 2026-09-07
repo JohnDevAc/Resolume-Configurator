@@ -1,5 +1,13 @@
 # Job Configurator interoperability
 
+## Audit fixes — 7 September 2026
+
+Decoder sender selection is pinned to the production IPv4 address already verified through the existing schema-1 PC Agent state/status contract. Endpoint, adapter, address and prefix are carried to the restart helper and must remain unchanged. Both N6 and N60 reject senders on other hosts and ambiguous same-host outputs. N60 activation requires the selected URL as well as the output name. No server/agent API or credential-export contract was added, and PC NDI writes remain owned by PC Agent.
+
+Mutation guards still reread the selected job and local readiness immediately before writes, including after internal waits. They skip optional local credential merging during repeated identity checks, reuse the Agent HTTP transport, and no longer run duplicate outer validations during restoration. Credentials are read at the start of the helper only for the verified job revision. Selected-server operations have a five-second health/state deadline; network discovery retains 850 ms probes.
+
+Output paths and XML are preflighted and staged before composition changes. Operation records retain backup paths and file commit status. A job/readiness failure stops further writes; recovery can still be necessary for earlier completed work. Helper completion is correlated by operation ID and monitored process exit, with a bounded operation lifetime.
+
 ## Additional QA corrections — 6 September 2026
 
 Local readiness validates the saved schema and endpoint/adapter identities, then requires the exact saved adapter to be up with the preferred IPv4 address and matching prefix. An identical IP on another adapter is insufficient. The live Agent response must match schema, endpoint, adapter, address and prefix before job/NDI readiness can permit writes.

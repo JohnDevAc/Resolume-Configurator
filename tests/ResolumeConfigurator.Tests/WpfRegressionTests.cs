@@ -26,6 +26,7 @@ internal static class WpfRegressionTests
                 window.Decoders.Add(plan.Decoders[0]);
                 window.Encoders.Add(plan.Encoders[0]);
                 SetField(window, "_product", new ArenaProduct("Arena", 7, 27, 1, 1));
+                SetField(window, "_readinessError", null);
                 Invoke(window, "SetBusy", false);
                 RegressionTests.Assert(window.ConfigureButton.IsEnabled, "valid inputs enable Configure");
 
@@ -41,6 +42,8 @@ internal static class WpfRegressionTests
                 RegressionTests.Assert(!window.ConfigureButton.IsEnabled && !window.RefreshDetectionButton.IsEnabled && !window.ConfigurationInputs.IsEnabled,
                     "configuration and editing remain disabled until the restart worker completes");
                 Invoke(window, "WindowMessageHook", IntPtr.Zero, 0x8001, new IntPtr(1), IntPtr.Zero, false);
+                RegressionTests.Assert(!window.ConfigureButton.IsEnabled, "an uncorrelated window message must not unlock an active operation");
+                Invoke(window, "CompleteConfiguration", 1);
                 RegressionTests.Assert(window.ConfigureButton.IsEnabled && window.RefreshDetectionButton.IsEnabled && window.ConfigurationInputs.IsEnabled,
                     "worker completion restores the controls");
                 RegressionTests.Assert(window.ConfigurationProgress.Value == 100, "worker success completes the progress bar");
@@ -57,7 +60,7 @@ internal static class WpfRegressionTests
         if (failure is not null) ExceptionDispatchInfo.Capture(failure).Throw();
     }
 
-    private static void SetField(MainWindow window, string name, object value) =>
+    private static void SetField(MainWindow window, string name, object? value) =>
         typeof(MainWindow).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, value);
     private static void Invoke(MainWindow window, string name, params object[] arguments) =>
         typeof(MainWindow).GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, arguments);

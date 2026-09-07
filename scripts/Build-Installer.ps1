@@ -2,10 +2,12 @@
 param(
     [ValidateSet('win-x64')]
     [string]$Runtime = 'win-x64',
-    [string]$OutputDirectory
+    [string]$OutputDirectory,
+    [string]$StagingDirectory
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'Payload.ps1')
 $projectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $projectFile = Join-Path $projectRoot 'src\ResolumeConfigurator\ResolumeConfigurator.csproj'
 
@@ -23,8 +25,9 @@ if ($null -eq $versionNode -or [string]::IsNullOrWhiteSpace($versionNode.InnerTe
 }
 $version = $versionNode.InnerText.Trim()
 
-$temporaryRoot = [IO.Path]::GetFullPath($env:TEMP).TrimEnd([IO.Path]::DirectorySeparatorChar)
-$buildDirectory = [IO.Path]::GetFullPath((Join-Path $temporaryRoot "ResolumeConfiguratorInstaller-$([Guid]::NewGuid().ToString('N'))"))
+$workspace = New-InstallerWorkspace -StagingDirectory $StagingDirectory
+$temporaryRoot = $workspace.Root
+$buildDirectory = $workspace.Directory
 if (-not $buildDirectory.StartsWith($temporaryRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
     throw 'Installer build directory is outside the temporary workspace.'
 }
@@ -37,18 +40,7 @@ $packagedInstallerPath = Join-Path $buildDirectory $installerName
 New-Item -ItemType Directory -Force -Path $publishDirectory, $OutputDirectory | Out-Null
 
 Write-Host "Publishing Resolume Arena Configurator $version for $Runtime..."
-& dotnet publish $projectFile `
-    --configuration Release `
-    --runtime $Runtime `
-    --self-contained true `
-    -p:PublishSingleFile=true `
-    --output $publishDirectory
-if ($LASTEXITCODE -ne 0) {
-    throw "dotnet publish failed with exit code $LASTEXITCODE"
-}
-
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Install-Local.ps1') -Destination $publishDirectory
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Uninstall-Local.ps1') -Destination $publishDirectory
+& (Join-Path $PSScriptRoot 'Publish-Local.ps1') -Runtime $Runtime -OutputDirectory $publishDirectory
 
 $payloadFiles = @(Get-ChildItem -LiteralPath $publishDirectory -File | Sort-Object Name)
 if ($payloadFiles.Count -eq 0) {
@@ -105,6 +97,7 @@ $sedLines = @(
     'UserQuietInstCmd="powershell.exe -NoProfile -ExecutionPolicy Bypass -File Install-Local.ps1"'
 ) + $stringEntries
 
+if (($sedLines -join "`n") -match '[^\x00-\x7F]') { throw 'IExpress package paths or filenames contain characters not representable in ASCII.' }
 [IO.File]::WriteAllLines($sedPath, $sedLines, [Text.Encoding]::ASCII)
 Write-Host "Packaging $installerName..."
 $iexpressProcess = Start-Process `

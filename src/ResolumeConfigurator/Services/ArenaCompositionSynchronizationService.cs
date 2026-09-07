@@ -5,14 +5,16 @@ namespace ResolumeConfigurator.Services;
 
 public sealed class ArenaCompositionSynchronizationService
 {
+    public string? BackupFile { get; private set; }
     public async Task<ArenaCompositionState> EnsureCurrentAsync(ResolumeApiClient api, string compositionDirectory,
         IProgress<string>? progress, CancellationToken ct)
     {
         var state = await api.GetCompositionStateAsync(ct);
         var backupDirectory = Path.Combine(compositionDirectory, "Configurator Backups", $"{DateTime.Now:yyyyMMdd-HHmmss-fff}-{Guid.NewGuid():N}");
         Directory.CreateDirectory(backupDirectory);
-        var backup = Path.Combine(backupDirectory, ArenaPaths.SafeFileName(state.Name, "Untitled") + ".avc");
+        var backup = ArenaPaths.OutputPath(backupDirectory, string.IsNullOrWhiteSpace(state.Name) ? "Untitled" : state.Name, ".avc");
         await api.SaveCompositionAsync(backup, ct);
+        BackupFile = backup;
         var saved = XDocument.Load(backup);
         progress?.Report($"Saved the open composition to {backup}.");
 

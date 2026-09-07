@@ -107,7 +107,8 @@ public sealed record ConfigurationPlan(
     string CompositionDirectory,
     string PresetDirectory,
     string? ConfiguratorUrl = null,
-    JobIdentity? ExpectedJob = null);
+    JobIdentity? ExpectedJob = null,
+    string? ArenaRoot = null);
 
 public sealed record ConfigurationResult(
     string CompositionFile,

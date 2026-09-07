@@ -1,5 +1,7 @@
 # Application review — 6 September 2026
 
+For the subsequent 7 September audit and its local fixes, see [the current audit status](APPLICATION-AUDIT-2026-09-07.md). The results below describe the earlier baseline and hardware runs.
+
 Reviewed and fixed the WPF interface, job discovery, source matching, Arena configuration and restart, XML generation, decoder preset selection, and packaging scripts. The original review expanded the regression suite from 12 to 27 tests and completed two successful full network runs, including automatic recovery from Arena's stale API state. That installer was built, installed, and published as v0.3.5. The subsequent startup and efficiency changes below expand coverage to 33 tests.
 
 ## Startup selection and efficiency follow-up

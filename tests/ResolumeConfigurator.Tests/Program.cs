@@ -62,13 +62,28 @@ if (args.Contains("--configure-n6", StringComparer.OrdinalIgnoreCase))
     var device = snapshot.Devices.Single(device => device.IsOnboarded && device.Role.Equals("Decoder", StringComparison.OrdinalIgnoreCase)
         && device.Hostname.Contains(requested, StringComparison.OrdinalIgnoreCase));
     var row = new DecoderRow { Order = 1, Device = device, OutputName = device.Hostname, Width = 1920, Height = 1080 };
-    var result = (await new KiloviewDecoderPresetService().ConfigureAsync(new[] { row }, null, CancellationToken.None)).Single();
+    var agent = await LocalNdiReadinessService.ReadIdentityAsync(snapshot, CancellationToken.None);
+    var result = (await new KiloviewDecoderPresetService().ConfigureAsync(new[] { row }, null, CancellationToken.None,
+        async ct =>
+        {
+            var current = await JobRevisionGuard.RefreshAsync(snapshot.Source, snapshot.Identity, ct);
+            if (await LocalNdiReadinessService.ReadIdentityAsync(current, ct) != agent) throw new InvalidOperationException("The production adapter changed.");
+        }, agent.Address)).Single();
     Console.WriteLine($"decoder={result.DecoderName}|family={result.Family}|slot={result.Slot}|reused={result.ReusedExistingSlot}|activated=true");
     return 0;
 }
 
 var tests = new (string Name, Action Test)[]
 {
+    ("audit: complete and unique encoder identities", AuditRegressionTests.SourceIdentities),
+    ("audit: verified decoder sender identity", AuditRegressionTests.SenderIdentity),
+    ("audit: completion cannot cancel validation", () => AuditRegressionTests.CompletionGuardsAsync().GetAwaiter().GetResult()),
+    ("audit: fast and stalled save/open verification", () => AuditRegressionTests.SaveAndOpenAsync().GetAwaiter().GetResult()),
+    ("audit: bounded filenames and atomic writes", () => AuditRegressionTests.FilesAndNamesAsync().GetAwaiter().GetResult()),
+    ("audit: file staging, preflight and recovery", () => AuditRegressionTests.FilePreflightAsync().GetAwaiter().GetResult()),
+    ("audit: helper exit, result and deadline recovery", () => AuditRegressionTests.WorkerResultsAsync().GetAwaiter().GetResult()),
+    ("audit: current Agent state retries", () => AuditRegressionTests.AgentStateRetryAsync().GetAwaiter().GetResult()),
+    ("audit: selected server operational deadline", () => AuditRegressionTests.OperationalTimeoutAsync().GetAwaiter().GetResult()),
     ("resolution parser", TestResolutionParser),
     ("source matcher", TestSourceMatcher),
     ("empty source identities", RegressionTests.EmptySourceIdentities),

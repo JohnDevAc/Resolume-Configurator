@@ -19,6 +19,8 @@ public partial class MainWindow : Window
     private bool _busy;
     private bool _decoderHelperPending;
     private bool _updatingSetupConstraints;
+    private ArenaUserPaths? _arenaPaths;
+    private string? _readinessError = "PC Agent readiness has not been checked";
     private readonly HashSet<ValidationError> _inputValidationErrors = [];
     private string _compositionName = "NDI Job";
     private const int DecoderHelperStatusMessage = 0x8001;
@@ -57,7 +59,6 @@ public partial class MainWindow : Window
             else _inputValidationErrors.Remove(e.Error);
             UpdatePlan();
         });
-        SourceInitialized += (_, _) => ((HwndSource)PresentationSource.FromVisual(this)).AddHook(WindowMessageHook);
         Loaded += async (_, _) => await InitializeAsync();
     }
 
@@ -106,6 +107,7 @@ public partial class MainWindow : Window
         DecoderCountText.Text = EncoderCountText.Text = "0";
         EncoderMatchWarningText.Visibility = Visibility.Collapsed;
         _product = null;
+        _readinessError = "PC Agent readiness has not been checked";
         using var api = new ResolumeApiClient();
         try
         {
@@ -113,6 +115,7 @@ public partial class MainWindow : Window
             var arenaTask = ReadArenaAsync(api);
             await Task.WhenAll(jobTask, arenaTask);
             _snapshot = await jobTask;
+            _arenaPaths = await Task.Run(ArenaPaths.Resolve);
             _compositionName = _snapshot.JobName;
             JobStatusText.Text = _snapshot.JobName;
             JobStatusText.ToolTip = $"{_snapshot.Devices.Count} device{Plural(_snapshot.Devices.Count)} · {_snapshot.Source}";
@@ -159,6 +162,15 @@ public partial class MainWindow : Window
             DecoderCountText.Text = Decoders.Count.ToString();
             EncoderCountText.Text = Encoders.Count.ToString();
             AppendLog($"Read {Decoders.Count} decoder(s) and {Encoders.Count} encoder(s) in NDI Job Configurator order.");
+            AppendLog($"Arena data folder: {_arenaPaths.Root}");
+            try
+            {
+                JobRevisionGuard.Validate(_snapshot.Identity, _snapshot);
+                await LocalNdiReadinessService.ValidateAsync(_snapshot, CancellationToken.None);
+                if (_product is not null) ArenaConfigurationOrchestrator.ValidateProduct(_product);
+                _readinessError = null;
+            }
+            catch (Exception ex) { _readinessError = ex.Message; AppendLog(ex.Message); }
             UpdatePlan();
         }
         catch (Exception ex)
@@ -205,6 +217,7 @@ public partial class MainWindow : Window
         var reviewResolutions = Decoders.Count(d => d.UsedFallbackResolution);
 
         var errors = new List<string>();
+        if (_readinessError is not null) errors.Add(_readinessError.TrimEnd('.'));
         if (_product is null) errors.Add("Arena webserver is not connected");
         if (_product is not null && !_product.Name.Equals("Arena", StringComparison.OrdinalIgnoreCase)) errors.Add("Resolume Arena is required");
         if (_inputValidationErrors.Count > 0) errors.Add("decoder dimensions must be whole numbers");
@@ -245,7 +258,7 @@ public partial class MainWindow : Window
 
     private ConfigurationPlan BuildPlan()
     {
-        var paths = ArenaPaths.Resolve();
+        var paths = _arenaPaths ?? ArenaPaths.FromRoot(AppContext.BaseDirectory);
         var resolution = WorkspaceResolutionComboBox.SelectedItem as WorkspaceResolutionOption ?? WorkspaceResolutions[1];
         var framesPerSecond = FrameRateComboBox.SelectedItem is int selectedFrameRate ? selectedFrameRate : 50;
         return new ConfigurationPlan(
@@ -255,7 +268,7 @@ public partial class MainWindow : Window
             AutoPlaceSourcesToggle.IsChecked == true,
             (int)SourceStartColumnSlider.Value,
             Decoders.ToArray(), Encoders.ToArray(),
-            _compositionName.Trim() + " - NDI Outputs", paths.Compositions, paths.AdvancedOutputPresets, _configuratorUrl, _snapshot?.Identity);
+            _compositionName.Trim() + " - NDI Outputs", paths.Compositions, paths.AdvancedOutputPresets, _configuratorUrl, _snapshot?.Identity, paths.Root);
     }
 
     private async void ConfigureButton_OnClick(object sender, RoutedEventArgs e)
@@ -282,8 +295,9 @@ public partial class MainWindow : Window
         {
             var plan = BuildPlan();
             var progress = new Progress<string>(AppendLog);
-            var result = await new ArenaConfigurationOrchestrator().ConfigureAsync(plan, progress, cancellation.Token);
-            AppendLog($"Arena restart initiated. Decoder activation will complete in this window. Preset: {result.PresetFile}");
+            var result = await Task.Run(() => new ArenaConfigurationOrchestrator().ConfigureAsync(plan, progress, cancellation.Token));
+            CompleteConfiguration(result.DecoderPresets.Count);
+            AppendLog($"Preset: {result.PresetFile}. Composition backup: {result.BackupFile}");
         }
         catch (Exception ex)
         {
@@ -314,26 +328,21 @@ public partial class MainWindow : Window
     private void AppendLog(string message) { LogBox.AppendText($"{DateTime.Now:HH:mm:ss}  {message}{Environment.NewLine}"); LogBox.ScrollToEnd(); }
     private IntPtr WindowMessageHook(IntPtr window, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
-        if (message != DecoderHelperStatusMessage || !_decoderHelperPending) return IntPtr.Zero;
-        handled = true;
+        // Legacy window messages are not authoritative completion signals.
+        return IntPtr.Zero;
+    }
+
+    private void CompleteConfiguration(int decoderCount)
+    {
         _decoderHelperPending = false;
         SetBusy(false);
         ConfigurationProgress.IsIndeterminate = false;
         Topmost = false;
         Activate();
-        if (wParam == new IntPtr(1))
-        {
-            ConfigurationProgress.Value = 100;
-            ValidationText.Text = "Configuration complete — all decoder banks are active.";
-            AppendLog("Decoder activation complete.");
-        }
-        else
-        {
-            ConfigurationProgress.Value = 0;
-            ValidationText.Text = "Decoder activation failed — see the window title for details.";
-            AppendLog("ERROR: Decoder activation failed after Arena restart.");
-        }
-        return IntPtr.Zero;
+        ConfigurationProgress.Value = 100;
+        Title = $"Resolume Arena Configurator — complete ({decoderCount} decoders)";
+        ValidationText.Text = "Configuration complete — all decoder banks are active.";
+        AppendLog("Decoder activation complete.");
     }
     private static string Plural(int count) => count == 1 ? "" : "s";
 }

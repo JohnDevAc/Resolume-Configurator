@@ -18,6 +18,13 @@ public partial class App : Application
         base.OnStartup(e);
         if (!_runStartup) return;
 
+        if (e.Args.Length == 2 && e.Args[0] == "--post-restart-request")
+        {
+            ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            _ = RunTrackedWorkerAsync(e.Args[1]);
+            return;
+        }
+
         if (e.Args.Length >= 2 && e.Args[0].Equals("--post-restart", StringComparison.OrdinalIgnoreCase))
         {
             ShutdownMode = ShutdownMode.OnExplicitShutdown;
@@ -56,5 +63,35 @@ public partial class App : Application
                 $"decoder activation failed — {ex.Message}", CancellationToken.None, parentProcessId);
         }
         finally { Shutdown(); }
+    }
+
+    private async Task RunTrackedWorkerAsync(string requestFile)
+    {
+        var exitCode = 1;
+        RestartRequest? request = null;
+        try
+        {
+            request = System.Text.Json.JsonSerializer.Deserialize<RestartRequest>(await File.ReadAllTextAsync(requestFile))
+                ?? throw new InvalidDataException("The restart request is empty.");
+            using var deadline = new CancellationTokenSource(WorkerCompletion.WorkerTimeout);
+            var decoders = await new PostRestartWorker().RunAsync(request.JobName, deadline.Token, request.Composition,
+                request.ConfiguratorUrl, request.ExpectedJob, request.Agent);
+            await AtomicFile.WriteJsonAsync(Path.Combine(Path.GetDirectoryName(requestFile)!, "worker-result.json"),
+                new WorkerOutcome(request.OperationId, true, null, decoders), CancellationToken.None);
+            exitCode = 0;
+        }
+        catch (Exception ex)
+        {
+            if (request is not null)
+            {
+                try
+                {
+                    await AtomicFile.WriteJsonAsync(Path.Combine(Path.GetDirectoryName(requestFile)!, "worker-result.json"),
+                        new WorkerOutcome(request.OperationId, false, ex.Message, []), CancellationToken.None);
+                }
+                catch { /* The parent detects exit without a readable result. */ }
+            }
+        }
+        finally { Shutdown(exitCode); }
     }
 }

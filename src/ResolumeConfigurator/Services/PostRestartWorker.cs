@@ -17,15 +17,18 @@ public sealed class PostRestartWorker
     }
 
     public async Task<IReadOnlyList<DecoderPresetResult>> RunAsync(string expectedJobName, CancellationToken ct,
-        PostRestartComposition? restoration = null, string? configuratorUrl = null, JobIdentity? expectedJob = null)
+        PostRestartComposition? restoration = null, string? configuratorUrl = null, JobIdentity? expectedJob = null,
+        LocalNdiReadinessService.LocalAgentIdentity? expectedAgent = null)
     {
         // This is a fresh process launched immediately after replacement Arena.
         // Give Arena a full 15 seconds to load Advanced Output and publish its
         // NDI senders before the Kiloview discovery requests begin.
-        await Task.Delay(TimeSpan.FromSeconds(15), ct).ConfigureAwait(false);
+        await _delay(TimeSpan.FromSeconds(15), ct).ConfigureAwait(false);
 
-        var snapshot = await JobRevisionGuard.RefreshAsync(configuratorUrl, expectedJob, ct).ConfigureAwait(false);
-        await LocalNdiReadinessService.ValidateAsync(snapshot, ct).ConfigureAwait(false);
+        var snapshot = await JobRevisionGuard.RefreshAsync(configuratorUrl, expectedJob, ct, includeLocalCredentials: true).ConfigureAwait(false);
+        var agent = await LocalNdiReadinessService.ReadIdentityAsync(snapshot, ct).ConfigureAwait(false);
+        if (expectedAgent is not null && expectedAgent != agent)
+            throw new InvalidOperationException("The production PC Agent identity changed during Arena restart. Reload and review the job.");
         if (!snapshot.JobName.Trim().Equals(expectedJobName.Trim(), StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException($"NDI Job Configurator changed from '{expectedJobName}' to '{snapshot.JobName}' during Arena restart.");
 
@@ -50,14 +53,15 @@ public sealed class PostRestartWorker
         async Task ValidateCurrentAsync(CancellationToken token)
         {
             var current = await JobRevisionGuard.RefreshAsync(configuratorUrl, expectedJob, token).ConfigureAwait(false);
-            await LocalNdiReadinessService.ValidateAsync(current, token).ConfigureAwait(false);
+            if (await LocalNdiReadinessService.ReadIdentityAsync(current, token).ConfigureAwait(false) != agent)
+                throw new InvalidOperationException("The production PC Agent identity changed during configuration.");
         }
 
         if (restoration is not null)
             await RestoreCompositionAsync(expectedJobName, decoders.Select(decoder => decoder.OutputName).ToArray(), restoration, ct, ValidateCurrentAsync).ConfigureAwait(false);
 
         return await new KiloviewDecoderPresetService().ConfigureAsync(decoders, null, ct,
-            ValidateCurrentAsync).ConfigureAwait(false);
+            ValidateCurrentAsync, agent.Address).ConfigureAwait(false);
     }
 
     public async Task RestoreCompositionAsync(string expectedJobName, IReadOnlyList<string> decoderNames,
@@ -90,22 +94,17 @@ public sealed class PostRestartWorker
         var clips = ResolveRestorationClips(state, decoderNames, restoration.SourceStartColumn, restoration.SourceCount);
         foreach (var clipId in clips.NdiClipIds)
         {
-            await validateCurrent(ct).ConfigureAwait(false);
             await api.ConfigureClipFitAsync(clipId, ct).ConfigureAwait(false);
         }
         foreach (var clipId in clips.RouterClipIds)
         {
-            await validateCurrent(ct).ConfigureAwait(false);
             await api.ConfigureVideoRouterFitAsync(clipId, ct).ConfigureAwait(false);
-            await validateCurrent(ct).ConfigureAwait(false);
             await api.ConnectClipAsync(clipId, ct).ConfigureAwait(false);
         }
         foreach (var clipId in clips.NdiClipIds)
         {
-            await validateCurrent(ct).ConfigureAwait(false);
             await api.UpdateClipThumbnailAsync(clipId, ct).ConfigureAwait(false);
         }
-        await validateCurrent(ct).ConfigureAwait(false);
         await api.SaveCompositionAsync(restoration.CompositionFile, ct).ConfigureAwait(false);
     }
 

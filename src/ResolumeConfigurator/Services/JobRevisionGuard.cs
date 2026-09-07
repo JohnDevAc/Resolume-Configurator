@@ -12,10 +12,10 @@ public static class JobRevisionGuard
             throw new InvalidOperationException("The selected server, job or device configuration changed. Reload the job and review the plan before changing Arena or decoders.");
     }
 
-    public static async Task<JobSnapshot> RefreshAsync(string? address, JobIdentity? expected, CancellationToken ct)
+    public static async Task<JobSnapshot> RefreshAsync(string? address, JobIdentity? expected, CancellationToken ct, bool includeLocalCredentials = false)
     {
         if (string.IsNullOrWhiteSpace(address)) throw new InvalidOperationException("Select a Job Configurator before configuring Arena.");
-        var snapshot = await new NdiJobConfiguratorReader(address).ReadAsync(ct).ConfigureAwait(false);
+        var snapshot = await new NdiJobConfiguratorReader(address).ReadAsync(ct, includeLocalCredentials).ConfigureAwait(false);
         Validate(expected, snapshot);
         return snapshot;
     }

@@ -24,13 +24,17 @@ Download the Windows installer or portable package from the [latest release](htt
 ## Requirements
 
 - Windows 10 or 11.
-- Resolume Arena 7 with **Preferences → Webserver** enabled on port `8080`.
+- Resolume Arena **7.27.x** with **Preferences → Webserver** enabled on port `8080`. Other API/XML versions fail preflight until their compatibility has been validated.
+- A local **NDI Configurator PC Agent**, onboarded into the selected job and reachable on TCP `8094`. Its schema-1 `agent-state.json` and live status must agree on the endpoint, production adapter, IPv4 address, job groups and Discovery Server. This is required even when Job Configurator is remote.
 - A running NDI Job Configurator available on TCP `8091`. On its hosting PC, the app connects locally. On other PCs, it scans the active local IPv4 subnets and lists the instances found, with job names, addresses, and device counts. Select an instance and click **Continue** before the main application opens, even if only one instance is found.
 - The network scan prioritizes nearby addresses and has a 15-second budget. `NDI_JOB_CONFIGURATOR_URL` adds a known remote server to the scan, including servers outside the local subnets. If nothing is found, the app displays a warning and exits when **Close application** is clicked. Saved state cannot substitute for a running configurator.
-- Encoder NDI sources visible in Arena before configuration.
+- Encoder NDI sources visible in Arena before configuration. Automatic matching requires complete, unambiguous identities; duplicate source assignments must be corrected.
+- Kiloview N6 or N60 decoders. Other decoder families are rejected before authentication. Arena output senders must advertise the production IPv4 address verified by PC Agent.
 - Decoder credentials saved by NDI Job Configurator, or its standard onboarding credentials for the current job (used locally and never displayed or logged). Local credentials from a different job are ignored. Custom credentials must be available in current local state.
 
 ## Run locally
+
+Source builds require the .NET 8 SDK with Windows desktop support. Published self-contained packages include the app runtime.
 
 ```powershell
 dotnet run --project .\src\ResolumeConfigurator\ResolumeConfigurator.csproj
@@ -39,16 +43,17 @@ dotnet run --project .\src\ResolumeConfigurator\ResolumeConfigurator.csproj
 ## Build the Windows app
 
 ```powershell
-dotnet publish .\src\ResolumeConfigurator\ResolumeConfigurator.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o .\artifacts\publish\win-x64
+.\scripts\Publish-Local.ps1
 ```
 
 Run the automated regression suite (a console executable, not a `dotnet test` project):
 
 ```powershell
 dotnet run --project .\tests\ResolumeConfigurator.Tests\ResolumeConfigurator.Tests.csproj -c Release
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\PackagingRegressionTests.ps1
 ```
 
-The suite uses temporary files, local test HTTP servers, an unshown main window, and briefly displayed startup dialogs with simulated discovery results. Production startup is disabled in the test application. It does not modify the running Arena composition or physical decoders. See [REVIEW.md](REVIEW.md) for the latest review and live network test results.
+The suite uses temporary files, in-memory HTTP handlers, local test HTTP servers, an unshown main window, and briefly displayed startup dialogs with simulated discovery results. Production startup is disabled in the test application. Packaging tests mock installation removal and process checks. These tests do not modify the running Arena composition, physical decoders or installed application. See [the audit and fix status](APPLICATION-AUDIT-2026-09-07.md) and [earlier live test results](REVIEW.md).
 
 Install the published test build for the current Windows user:
 
@@ -58,6 +63,7 @@ Install the published test build for the current Windows user:
 
 The app is installed under `%LOCALAPPDATA%\Programs\Resolume Arena Configurator` and shortcuts are added to the Start menu and desktop.
 It is also registered under Windows **Installed apps**, where it can be uninstalled normally.
+`Publish-Local.ps1` includes the installation scripts, licence and a SHA-256 payload manifest. Installation verifies the complete manifest before closing the app or copying files. A bare `dotnet publish` directory must be prepared with `Publish-Local.ps1` before using `Install-Local.ps1`.
 
 ## Build the Windows installer
 
@@ -67,11 +73,30 @@ It is also registered under Windows **Installed apps**, where it can be uninstal
 
 This publishes the self-contained `win-x64` app and creates a versioned Setup executable plus its SHA-256 checksum under `artifacts\release`. The installer is per-user, does not require administrator access, adds Start menu and desktop shortcuts, and registers the app under Windows **Installed apps**.
 
+IExpress requires ASCII staging paths. The builder uses a writable ASCII temporary directory, falling back to Common Documents when the user temporary path contains Unicode. `-StagingDirectory` supplies an explicit alternative. The final `-OutputDirectory` can contain Unicode. Nested publish content is rejected explicitly rather than omitted from the installer.
+
 The generated installer is not code-signed. Windows SmartScreen may therefore show an unrecognized-app warning until the executable is signed with a trusted code-signing certificate.
 
 ## Safety and Arena behavior
 
 The selected configurator remains fixed for refreshes, configuration, and the post-restart helper. A lost connection is reported instead of switching to another job or using cached job data. Local state is used only to supplement credentials for the matching current job.
+
+The default Arena data root is Windows' actual Documents folder plus `Resolume Arena`, including normal Documents redirection. There is no guessed OneDrive fallback. The chosen root is displayed in the activity log. Optional environment overrides must be absolute paths (environment-variable expansion is supported):
+
+| Override | Meaning |
+| --- | --- |
+| `RESOLUME_ARENA_DATA_DIR` | Existing Arena user-data folder containing `Preferences`. |
+| `RESOLUME_ARENA_EXE` | The existing `Arena.exe` to launch; required to disambiguate multiple installations. |
+| `RESOLUME_PC_AGENT_STATE_PATH` | Full path to the local PC Agent's current `agent-state.json`. |
+| `NDI_JOB_CONFIGURATOR_DATA_DIR` | Directory containing optional local `state.json` credentials; `KILOVIEW_DATA_DIR` is the legacy fallback. |
+
+Generated filenames escape reserved names and use a stable suffix when sanitization or shortening is necessary. Arena file paths are kept within a conservative 240-character budget; an excessively long root fails preflight with instructions to choose a shorter directory. The runtime generates its own presets and does not require an external XML template or source checkout.
+
+Before composition edits, all output destinations are probed for writing/replacement, existing XML is checked, and the generated output files are staged. Recovery records under `Compositions\Configurator Backups\<operation ID>\operation.json` identify the composition backup, archived job composition, staged files and each output replacement. File-write failures roll back earlier output replacements where possible. A changed job/readiness check stops further writes and leaves the record for recovery. These checks cannot guarantee that a disk or network share remains available later.
+
+The parent app monitors helper exit and reads a result with the matching operation ID. Unexpected exit, missing/malformed results, and a helper deadline restore an actionable error instead of relying on a window notification. The helper has a 15-minute overall deadline, sender discovery a 35-second deadline per decoder, and activation verification 15 seconds. Job Configurator discovery probes retain their 850 ms budget; reads of the selected server use five seconds. Current Agent-state reads retry brief incomplete writes without falling back to an old adapter identity.
+
+Save/open completion is verified for both fast and stalled HTTP responses. An unchanged old thumbnail alone cannot confirm a stalled update; the app requires a live-image transition, a changed update token, or a successful HTTP acknowledgement with a live thumbnail. If Arena provides none of these, configuration reports a timeout for review instead of claiming that the refresh succeeded.
 
 At startup, Arena is launched only after a configurator has been found and selected. Its webserver is checked until ready, up to 15 seconds, instead of always waiting the full interval. A fresh discovery snapshot is reused for the first refresh; independent job and Arena reads run concurrently, and source matching prepares the discovered source names once per refresh.
 

@@ -11,14 +11,16 @@ namespace ResolumeConfigurator.Services;
 public sealed class ResolumeApiClient : IPostRestartArenaApi
 {
     private readonly HttpClient _http;
+    private readonly TimeSpan _completionTimeout;
     public Func<CancellationToken, Task>? BeforeMutation { get; set; }
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { PropertyNameCaseInsensitive = true };
 
-    public ResolumeApiClient(string baseAddress = "http://127.0.0.1:8080/api/v1/", TimeSpan? timeout = null, HttpMessageHandler? handler = null)
+    public ResolumeApiClient(string baseAddress = "http://127.0.0.1:8080/api/v1/", TimeSpan? timeout = null, HttpMessageHandler? handler = null, TimeSpan? completionTimeout = null)
     {
         _http = handler is null ? new HttpClient() : new HttpClient(handler);
         _http.BaseAddress = new Uri(baseAddress);
         _http.Timeout = timeout ?? TimeSpan.FromSeconds(60);
+        _completionTimeout = completionTimeout ?? TimeSpan.FromSeconds(60);
         // Arena is deliberately killed and relaunched during one app workflow.
         // Do not retain keep-alive sockets belonging to the previous process;
         // a stale accepted connection can otherwise outlive the old listener
@@ -149,95 +151,47 @@ public sealed class ResolumeApiClient : IPostRestartArenaApi
 
     public async Task SaveCompositionAsync(string path, CancellationToken ct)
     {
-        var saveStartedUtc = DateTime.UtcNow;
-        using var saveCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        var request = PostAsync("composition/save", ToFileUrl(path), "text/plain", saveCancellation.Token);
-        DateTime observedWriteUtc = default;
-        long observedLength = -1;
-        var stableObservations = 0;
-
-        // Arena 7.27 occasionally writes a complete AVC file but never finishes
-        // the HTTP response. Treat a fully parseable on-disk composition as the
-        // authoritative completion signal and cancel only the dangling request.
-        for (var attempt = 0; attempt < 200; attempt++)
+        await ValidateMutationAsync(ct);
+        var started = DateTime.UtcNow;
+        var original = FileStamp(path);
+        (DateTime WriteUtc, long Length) observed = (default, -1);
+        var stable = 0;
+        await VerifiedPostAsync("composition/save", ToFileUrl(path), "text/plain", (_, _) =>
         {
-            if (request.IsCompleted)
+            var current = FileStamp(path);
+            if (current != original && current.Length > 0 && current.WriteUtc >= started)
             {
-                await request;
-                return;
+                stable = current == observed ? stable + 1 : 1;
+                observed = current;
+                // Parse only after metadata settles, including for a fast HTTP 200.
+                return Task.FromResult(stable >= 5 && IsCompleteCompositionFile(path));
             }
-            if (IsCompleteCompositionFile(path) && File.GetLastWriteTimeUtc(path) >= saveStartedUtc)
-            {
-                var file = new FileInfo(path);
-                if (file.LastWriteTimeUtc == observedWriteUtc && file.Length == observedLength)
-                    stableObservations++;
-                else
-                {
-                    observedWriteUtc = file.LastWriteTimeUtc;
-                    observedLength = file.Length;
-                    stableObservations = 1;
-                }
-
-                // Do not patch or reopen the AVC while Arena can still replace it.
-                // Five unchanged observations provide a short but reliable settle window.
-                if (stableObservations >= 5)
-                {
-                    saveCancellation.Cancel();
-                    try { await request; }
-                    catch (OperationCanceledException) when (!ct.IsCancellationRequested) { }
-                    return;
-                }
-            }
-            else stableObservations = 0;
-            await Task.Delay(100, ct);
-        }
-        await request;
+            stable = 0;
+            return Task.FromResult(false);
+        }, ct);
     }
 
     public async Task OpenCompositionAsync(string path, string expectedCompositionName, CancellationToken ct)
     {
-        using var openCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        var request = PostAsync("composition/open", ToFileUrl(path), "text/plain", openCancellation.Token);
-
-        // Arena can apply the open immediately yet leave this response pending.
-        // Give it time to load, then confirm the REST composition is responsive
-        // and has the expected internal job name before releasing the request.
-        var stableExpectedNameObservations = 0;
-        for (var attempt = 0; attempt < 100; attempt++)
+        var saved = XDocument.Load(path);
+        if (saved.Root?.Name.LocalName != "Composition") throw new InvalidDataException("The saved file is not an Arena composition.");
+        await ValidateMutationAsync(ct);
+        var stable = 0;
+        await VerifiedPostAsync("composition/open", ToFileUrl(path), "text/plain", async (_, token) =>
         {
-            if (request.IsCompleted)
-            {
-                await request;
-                return;
-            }
-            await Task.Delay(100, ct);
-            if (attempt < 7) continue;
             try
             {
-                var state = await GetCompositionStateAsync(ct);
-                if (!state.Name.Equals(expectedCompositionName, StringComparison.OrdinalIgnoreCase))
-                {
-                    stableExpectedNameObservations = 0;
-                    continue;
-                }
-
-                // The composition name changes near the start of Arena's reload.
-                // Let the complete graph settle before cancelling a dangling HTTP response.
-                stableExpectedNameObservations++;
-                if (stableExpectedNameObservations >= 10)
-                {
-                    openCancellation.Cancel();
-                    try { await request; }
-                    catch (OperationCanceledException) when (!ct.IsCancellationRequested) { }
-                    return;
-                }
+                var state = await GetCompositionStateAsync(token);
+                stable = state.Name.Equals(expectedCompositionName, StringComparison.OrdinalIgnoreCase)
+                    && ArenaCompositionSynchronizationService.MatchesSavedStructure(saved, state) ? stable + 1 : 0;
+                return stable >= 5;
             }
-            catch (HttpRequestException) when (!ct.IsCancellationRequested)
+            catch (HttpRequestException) when (!token.IsCancellationRequested)
             {
-                stableExpectedNameObservations = 0;
+                stable = 0;
+                return false;
             }
-        }
-        await request;
+        }, ct);
     }
 
     public Task AddLayerGroupAsync(CancellationToken ct) => PostAsync("composition/layergroups/add", null, null, ct);
@@ -278,79 +232,70 @@ public sealed class ResolumeApiClient : IPostRestartArenaApi
     public async Task UpdateClipThumbnailAsync(long clipId, CancellationToken ct)
     {
         var previous = await GetThumbnailStateAsync(clipId, ct);
-        using var updateCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        var request = PostAsync($"composition/clips/by-id/{clipId}/thumbnail/update", null, null, updateCancellation.Token);
-        var responseCompleted = false;
-
-        // Arena can capture the thumbnail while leaving the POST response pending.
-        // A changed last_update token is ideal. Arena 7.27 can also keep that token
-        // unchanged when it refreshes an already-live NDI thumbnail, so a stable,
-        // non-default image after the capture has had time to run is also success.
-        for (var attempt = 0; attempt < 100; attempt++)
+        await ValidateMutationAsync(ct);
+        await VerifiedPostAsync($"composition/clips/by-id/{clipId}/thumbnail/update", null, null, async (acknowledged, token) =>
         {
-            if (!responseCompleted && request.IsCompleted)
-            {
-                await request;
-                responseCompleted = true;
-            }
-            await Task.Delay(50, ct);
-            var current = await GetThumbnailStateAsync(clipId, ct);
+            var current = await GetThumbnailStateAsync(clipId, token);
             var tokenChanged = !string.IsNullOrEmpty(current.LastUpdate) && current.LastUpdate != previous.LastUpdate;
-            var refreshedExistingImage = attempt >= 4 && !current.IsDefault;
-            if (!tokenChanged && !refreshedExistingImage) continue;
-
-            if (!responseCompleted)
-            {
-                updateCancellation.Cancel();
-                try { await request; }
-                catch (OperationCanceledException) when (!ct.IsCancellationRequested) { }
-            }
-            return;
-        }
-
-        if (!responseCompleted)
-        {
-            updateCancellation.Cancel();
-            try { await request; }
-            catch (OperationCanceledException) when (!ct.IsCancellationRequested) { }
-        }
-        throw new InvalidOperationException("Arena did not produce a live thumbnail for the NDI clip.");
+            return !current.IsDefault && (tokenChanged || previous.IsDefault || acknowledged);
+        }, ct);
     }
 
     public async Task ConnectClipAsync(long clipId, CancellationToken ct)
     {
-        using var connectCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        var request = PostAsync($"composition/clips/by-id/{clipId}/connect", null, null, connectCancellation.Token);
-        var responseCompleted = false;
-
-        for (var attempt = 0; attempt < 100; attempt++)
+        await ValidateMutationAsync(ct);
+        await VerifiedPostAsync($"composition/clips/by-id/{clipId}/connect", null, null, async (_, token) =>
         {
-            if (!responseCompleted && request.IsCompleted)
-            {
-                await request;
-                responseCompleted = true;
-            }
+            using var document = await GetJsonAsync($"composition/clips/by-id/{clipId}", token);
+            return document.RootElement.TryGetProperty("connected", out var connected)
+                && connected.ValueKind == JsonValueKind.Object
+                && connected.TryGetProperty("value", out var value) && value.ValueKind == JsonValueKind.String
+                && value.GetString()?.StartsWith("Connected", StringComparison.OrdinalIgnoreCase) == true;
+        }, ct);
+    }
 
-            using var document = await GetJsonAsync($"composition/clips/by-id/{clipId}", ct);
-            if (document.RootElement.TryGetProperty("connected", out var connected) &&
-                connected.ValueKind == JsonValueKind.Object &&
-                connected.TryGetProperty("value", out var value) &&
-                value.ValueKind == JsonValueKind.String &&
-                value.GetString()?.StartsWith("Connected", StringComparison.OrdinalIgnoreCase) == true)
+    private Task ValidateMutationAsync(CancellationToken ct) => BeforeMutation?.Invoke(ct) ?? Task.CompletedTask;
+
+    // Called only after validation. This request represents HTTP dispatch, so
+    // completion detection can never cancel or suppress the mutation guard.
+    private async Task VerifiedPostAsync(string uri, string? body, string? contentType,
+        Func<bool, CancellationToken, Task<bool>> completed, CancellationToken ct)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(_completionTimeout);
+        using var requestCancellation = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
+        var request = PostCoreAsync(uri, body, contentType, requestCancellation.Token);
+        try
+        {
+            while (true)
             {
-                if (!responseCompleted)
+                if (request.IsCompleted) await request;
+                if (await completed(request.IsCompletedSuccessfully, deadline.Token))
                 {
-                    connectCancellation.Cancel();
+                    requestCancellation.Cancel();
                     try { await request; }
-                    catch (OperationCanceledException) when (!ct.IsCancellationRequested) { }
+                    catch (OperationCanceledException) when (!deadline.IsCancellationRequested) { }
+                    return;
                 }
-                return;
+                await Task.Delay(100, deadline.Token);
             }
-            await Task.Delay(50, ct);
         }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            throw new TimeoutException($"Arena could not verify {uri}: the HTTP request or {_completionTimeout.TotalSeconds:0.#}-second completion deadline expired. Check the saved file/live state before retrying.");
+        }
+        finally
+        {
+            requestCancellation.Cancel();
+            try { await request; } catch { /* Observe cleanup without replacing the original failure. */ }
+        }
+    }
 
-        if (!responseCompleted) await request;
-        throw new InvalidOperationException("Arena did not connect the Video Router clip.");
+    private static (DateTime WriteUtc, long Length) FileStamp(string path)
+    {
+        try { var file = new FileInfo(path); return file.Exists ? (file.LastWriteTimeUtc, file.Length) : (default, -1); }
+        catch (IOException) { return (default, -1); }
+        catch (UnauthorizedAccessException) { return (default, -1); }
     }
 
     private async Task ConfigureClipFitAsync(long clipId, string clipDescription, CancellationToken ct)
@@ -487,7 +432,12 @@ public sealed class ResolumeApiClient : IPostRestartArenaApi
 
     private async Task PostAsync(string uri, string? body, string? contentType, CancellationToken ct)
     {
-        if (BeforeMutation is not null) await BeforeMutation(ct);
+        await ValidateMutationAsync(ct);
+        await PostCoreAsync(uri, body, contentType, ct);
+    }
+
+    private async Task PostCoreAsync(string uri, string? body, string? contentType, CancellationToken ct)
+    {
         using var content = body is null ? null : new StringContent(body, Encoding.UTF8, contentType ?? "text/plain");
         using var response = await _http.PostAsync(uri, content, ct);
         await EnsureSuccessAsync(response, $"update {uri}", ct);

@@ -11,7 +11,14 @@ public sealed class ArenaStartupService
         var running = Process.GetProcessesByName("Arena");
         try
         {
-            if (running.Length > 0) return new ArenaStartupResult(false, null);
+            if (running.Length > 1) throw new InvalidOperationException("Close surplus Arena processes before configuring. Exactly one local Arena instance is supported.");
+            if (running.Length == 1)
+            {
+                var configured = ArenaPaths.ResolveOverride("RESOLUME_ARENA_EXE");
+                if (configured is not null && !string.Equals(running[0].MainModule?.FileName, configured, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("The running Arena does not match RESOLUME_ARENA_EXE. Start the configured installation before continuing.");
+                return new ArenaStartupResult(false, running[0].MainModule?.FileName);
+            }
         }
         finally
         {
@@ -56,6 +63,13 @@ public sealed class ArenaStartupService
 
     private static string? ResolveExecutable()
     {
+        var configured = ArenaPaths.ResolveOverride("RESOLUME_ARENA_EXE");
+        if (configured is not null)
+        {
+            if (!File.Exists(configured) || !Path.GetFileName(configured).Equals("Arena.exe", StringComparison.OrdinalIgnoreCase))
+                throw new FileNotFoundException("RESOLUME_ARENA_EXE must point to an existing Arena.exe.", configured);
+            return configured;
+        }
         var candidates = new List<string>();
         foreach (var root in new[]
         {
@@ -87,7 +101,9 @@ public sealed class ArenaStartupService
             }
         }
 
-        return candidates.FirstOrDefault(File.Exists);
+        var found = candidates.Where(File.Exists).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        if (found.Length > 1) throw new InvalidOperationException("Several Arena installations were found. Set RESOLUME_ARENA_EXE to the Arena.exe to use.");
+        return found.FirstOrDefault();
     }
 }
 

@@ -23,9 +23,11 @@ internal static class MutationBoundaryTests
         {
             var api = new ArenaFixture();
             var waited = false;
+            var validations = 0;
             var worker = new PostRestartWorker(() => api, (_, _) => { waited = true; return Task.CompletedTask; });
             Task Guard(CancellationToken ct)
             {
+                validations++;
                 if (!waited) throw new Exception("Readiness was checked before the restart wait ended.");
                 JobRevisionGuard.Validate(identity, failure == "job" ? job with { Identity = identity with { Revision = "changed" } } : job);
                 LocalNdiReadinessService.Validate(status.RootElement, "pc", failure == "ndi" ? job with { DiscoveryServer = "192.0.2.9" } : job);
@@ -38,6 +40,7 @@ internal static class MutationBoundaryTests
                 await worker.RestoreCompositionAsync("Job", ["Decoder"], new("Job.avc", 1, 1), CancellationToken.None, Guard);
                 if (failure != "none") throw new Exception("Unsafe restoration succeeded.");
                 if (api.Writes == 0 || !api.Saved) throw new Exception("Valid restoration did not finish.");
+                if (validations != api.Writes) throw new Exception("Restoration redundantly revalidated outside its mutation boundaries.");
             }
             catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException)
             {
@@ -58,7 +61,7 @@ internal static class MutationBoundaryTests
             try
             {
                 await service.ConfigureAsync([row], null, CancellationToken.None, _ => handler.Discovered
-                    ? Task.FromException(new InvalidOperationException("Job changed while discovery was pending")) : Task.CompletedTask);
+                    ? Task.FromException(new InvalidOperationException("Job changed while discovery was pending")) : Task.CompletedTask, "192.0.2.10");
                 throw new Exception("Stale decoder configuration succeeded.");
             }
             catch (InvalidOperationException ex) when (ex.Message.Contains("Job changed")) { }
@@ -79,8 +82,8 @@ internal static class MutationBoundaryTests
             else if (path is "/api/codec/discovery/scan" or "/api/source/groups/list")
             {
                 Discovered = true;
-                json = family == "N60" ? """{"data":[{"name":"Decoder","channel_name":"Decoder","url":"ndi://fixture"}]}"""
-                    : """{"data":[{"streams":[{"id":"sender","name":"Decoder","url":"ndi://fixture","address":"192.0.2.10"}]}]}""";
+                json = family == "N60" ? """{"data":[{"name":"Decoder","channel_name":"Decoder","url":"ndi://192.0.2.10:5961"}]}"""
+                    : """{"data":[{"streams":[{"id":"sender","name":"Decoder","url":"ndi://192.0.2.10:5961","address":"192.0.2.10"}]}]}""";
             }
             else { Writes++; throw new Exception("Unexpected configuration request: " + path); }
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json) });
@@ -101,12 +104,12 @@ internal static class MutationBoundaryTests
                     [(long)(i * 100 + j * 10 + 1), (long)(i * 100 + j * 10 + 2)])).ToArray())).ToArray();
             return Task.FromResult(new ArenaCompositionState("Job", groups.SelectMany(g => g.Layers).ToArray(), groups, []));
         }
-        private Task Write() { Writes++; return Task.CompletedTask; }
+        private async Task Write() { if (BeforeMutation is not null) await BeforeMutation(CancellationToken.None); Writes++; }
         public Task ConfigureClipFitAsync(long id, CancellationToken ct) => Write();
         public Task ConfigureVideoRouterFitAsync(long id, CancellationToken ct) => Write();
         public Task ConnectClipAsync(long id, CancellationToken ct) => Write();
         public Task UpdateClipThumbnailAsync(long id, CancellationToken ct) => Write();
-        public Task SaveCompositionAsync(string path, CancellationToken ct) { Saved = true; return Write(); }
+        public async Task SaveCompositionAsync(string path, CancellationToken ct) { await Write(); Saved = true; }
         public void Dispose() { }
     }
 

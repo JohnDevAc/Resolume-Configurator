@@ -6,6 +6,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'Payload.ps1')
 $executableName = 'Resolume Arena Configurator.exe'
 if ([string]::IsNullOrWhiteSpace($SourceDirectory)) {
     $adjacentExecutable = Join-Path $PSScriptRoot $executableName
@@ -17,6 +18,7 @@ if ([string]::IsNullOrWhiteSpace($SourceDirectory)) {
     }
 }
 $source = (Resolve-Path -LiteralPath $SourceDirectory).Path
+$manifest = Test-PayloadManifest -Directory $source
 $sourceExecutable = Join-Path $source $executableName
 if (-not (Test-Path -LiteralPath $sourceExecutable)) {
     throw "Published app not found: $sourceExecutable"
@@ -42,8 +44,10 @@ foreach ($runningApp in $runningApps) {
     }
 }
 New-Item -ItemType Directory -Force -Path $installDirectory | Out-Null
-Copy-Item -Path (Join-Path $source '*') -Destination $installDirectory -Recurse -Force
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Uninstall-Local.ps1') -Destination $installDirectory -Force
+foreach ($entry in $manifest.Files) {
+    Copy-Item -LiteralPath (Join-Path $source $entry.Name) -Destination $installDirectory -Force
+}
+Copy-Item -LiteralPath (Join-Path $source 'payload-manifest.json') -Destination $installDirectory -Force
 
 $installedExecutable = Join-Path $installDirectory $executableName
 $shell = New-Object -ComObject WScript.Shell

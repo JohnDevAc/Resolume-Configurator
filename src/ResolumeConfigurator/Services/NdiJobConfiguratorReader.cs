@@ -20,15 +20,13 @@ public sealed class NdiJobConfiguratorReader
 
     public string ResolveStatePath()
     {
-        var overrideDirectory = Environment.GetEnvironmentVariable("NDI_JOB_CONFIGURATOR_DATA_DIR")
-            ?? Environment.GetEnvironmentVariable("KILOVIEW_DATA_DIR");
-        var directory = !string.IsNullOrWhiteSpace(overrideDirectory)
-            ? Path.GetFullPath(overrideDirectory)
-            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NDI Job Configurator");
+        var directory = ArenaPaths.ResolveOverride("NDI_JOB_CONFIGURATOR_DATA_DIR")
+            ?? ArenaPaths.ResolveOverride("KILOVIEW_DATA_DIR")
+            ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NDI Job Configurator");
         return Path.Combine(directory, "state.json");
     }
 
-    public async Task<JobSnapshot> ReadAsync(CancellationToken cancellationToken = default)
+    public async Task<JobSnapshot> ReadAsync(CancellationToken cancellationToken = default, bool includeLocalCredentials = true)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var address = _selectedAddress;
@@ -42,9 +40,9 @@ public sealed class NdiJobConfiguratorReader
             else throw new HttpRequestException($"No NDI Job Configurator was found on TCP {Port}.");
         }
         // Never rediscover or use cached job data when the selected server goes offline.
-        var snapshot = await TryReadApiAsync(address, cancellationToken).ConfigureAwait(false)
+        var snapshot = await TryReadApiCoreAsync(address, TimeSpan.FromSeconds(5), cancellationToken, reportTimeout: true).ConfigureAwait(false)
             ?? throw new HttpRequestException($"The selected NDI Job Configurator at {address} is unavailable. Check its connection and try again.");
-        return await MergeLocalCredentialsAsync(snapshot, cancellationToken).ConfigureAwait(false);
+        return includeLocalCredentials ? await MergeLocalCredentialsAsync(snapshot, cancellationToken).ConfigureAwait(false) : snapshot;
     }
 
     internal Task<JobSnapshot> ReadInitialAsync(JobSnapshot? discoveredSnapshot, CancellationToken ct = default) =>
@@ -131,13 +129,16 @@ public sealed class NdiJobConfiguratorReader
             : new DeviceCredentials(username, password);
     }
 
-    internal static async Task<JobSnapshot?> TryReadApiAsync(string address, CancellationToken cancellationToken)
+    internal static Task<JobSnapshot?> TryReadApiAsync(string address, CancellationToken cancellationToken) =>
+        TryReadApiCoreAsync(address, TimeSpan.FromMilliseconds(850), cancellationToken);
+
+    internal static async Task<JobSnapshot?> TryReadApiCoreAsync(string address, TimeSpan requestTimeout, CancellationToken cancellationToken, bool reportTimeout = false)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var root = NormalizeBaseAddress(address);
         if (root is null) return null;
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromMilliseconds(850));
+        timeout.CancelAfter(requestTimeout);
         var apiBaseUri = new Uri(root + "/");
         try
         {
@@ -154,6 +155,8 @@ public sealed class NdiJobConfiguratorReader
             if (!IsSnapshot(state.RootElement)) return null;
             return ParseSnapshot(state.RootElement, root);
         }
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested && reportTimeout)
+        { throw new HttpRequestException($"The selected Job Configurator at {root} did not complete its health/state response within {requestTimeout.TotalSeconds:0.#} seconds.", ex); }
         catch (Exception ex) when (!cancellationToken.IsCancellationRequested && (ex is HttpRequestException or OperationCanceledException or JsonException)) { return null; }
     }
 

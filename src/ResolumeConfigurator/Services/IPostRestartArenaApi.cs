@@ -4,6 +4,7 @@ namespace ResolumeConfigurator.Services;
 
 public interface IPostRestartArenaApi : IDisposable
 {
+    // Implementations must await this immediately before every write, after any loading waits.
     Func<CancellationToken, Task>? BeforeMutation { get; set; }
     Task<ArenaCompositionState> GetCompositionStateAsync(CancellationToken ct);
     Task ConfigureClipFitAsync(long clipId, CancellationToken ct);

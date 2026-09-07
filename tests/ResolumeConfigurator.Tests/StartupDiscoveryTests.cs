@@ -116,11 +116,12 @@ internal static class StartupDiscoveryTests
         }
         await server;
         listener.Stop();
-        try { await jobReader.ReadInitialAsync(Snapshot(address) with { ReadAt = DateTimeOffset.Now.AddMinutes(-1) }, deadline.Token); throw new InvalidOperationException("stale startup snapshots must be reread"); }
+        using var offlineDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        try { await jobReader.ReadInitialAsync(Snapshot(address) with { ReadAt = DateTimeOffset.Now.AddMinutes(-1) }, offlineDeadline.Token); throw new InvalidOperationException("stale startup snapshots must be reread"); }
         catch (HttpRequestException) { }
-        try { await jobReader.ReadInitialAsync(Snapshot("http://192.0.2.99:8091"), deadline.Token); throw new InvalidOperationException("startup snapshot must belong to selected endpoint"); }
+        try { await jobReader.ReadInitialAsync(Snapshot("http://192.0.2.99:8091"), offlineDeadline.Token); throw new InvalidOperationException("startup snapshot must belong to selected endpoint"); }
         catch (HttpRequestException) { }
-        try { await jobReader.ReadAsync(deadline.Token); throw new InvalidOperationException("offline selection must not fall back to another instance or cache"); }
+        try { await jobReader.ReadAsync(offlineDeadline.Token); throw new InvalidOperationException("offline selection must not fall back to another instance or cache"); }
         catch (HttpRequestException) { }
     }
 
@@ -207,7 +208,7 @@ internal static class StartupDiscoveryTests
         var sources = new[] { new ArenaSource("B", "Camera Z", "NDI Servers"), new ArenaSource("A", "Camera A", "NDI Servers") };
         var matcher = SourceMatcher.CreateMatcher(sources);
         var device = new JobDevice("test", "192.0.2.1", "Camera", "N6", "N6", "Encoder", "", null, true, "Online");
-        Assert(matcher(device)?.Name == "Camera A", "equal scores retain deterministic alphabetical choice");
+        Assert(matcher(device) is null, "a partial shared name must require a manual match");
         Assert(matcher(device with { Hostname = "Camera Z" })?.Name == "Camera Z", "exact match outranks partial matches in a reused source index");
         Assert(matcher(device with { Hostname = "Unknown" }) is null, "a reused source index must not leak a previous result");
     }

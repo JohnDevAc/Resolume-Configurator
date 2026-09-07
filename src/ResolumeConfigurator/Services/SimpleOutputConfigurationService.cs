@@ -7,6 +7,14 @@ public sealed class SimpleOutputConfigurationService
 {
     public async Task ApplyNdiCompositionSharingAsync(string preferenceFile, bool enabled, int width, int height, CancellationToken ct)
     {
+        var document = CreateDocument(preferenceFile, enabled, width, height);
+        await AtomicFile.WriteXmlAsync(preferenceFile, document, ct, backup: true);
+        if (!PreferenceMatches(preferenceFile, enabled))
+            throw new IOException("Arena's NDI composition-sharing preference could not be verified after writing it.");
+    }
+
+    internal static XDocument CreateDocument(string preferenceFile, bool enabled, int width, int height)
+    {
         var document = File.Exists(preferenceFile)
             ? XDocument.Load(preferenceFile, LoadOptions.PreserveWhitespace)
             : new XDocument(new XDeclaration("1.0", "utf-8", null), new XElement("SimpleSetup", new XAttribute("advancedModeEnabled", "1")));
@@ -35,29 +43,7 @@ public sealed class SimpleOutputConfigurationService
                 new XAttribute("height", height)));
         }
 
-        var directory = Path.GetDirectoryName(preferenceFile)
-            ?? throw new InvalidOperationException("Arena's Preferences directory could not be determined.");
-        Directory.CreateDirectory(directory);
-        if (File.Exists(preferenceFile))
-        {
-            var backup = preferenceFile + ".before-configurator-" + DateTime.Now.ToString("yyyyMMdd-HHmmss-fffffff") + ".bak";
-            File.Copy(preferenceFile, backup, false);
-        }
-
-        var temporary = Path.Combine(directory, $"SimpleOutput.{Guid.NewGuid():N}.tmp");
-        try
-        {
-            await using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.Read))
-                await document.SaveAsync(stream, SaveOptions.None, ct);
-            File.Move(temporary, preferenceFile, true);
-        }
-        finally
-        {
-            if (File.Exists(temporary)) File.Delete(temporary);
-        }
-
-        if (!PreferenceMatches(preferenceFile, enabled))
-            throw new IOException("Arena's NDI composition-sharing preference could not be verified after writing it.");
+        return document;
     }
 
     public static bool PreferenceMatches(string preferenceFile, bool expectedEnabled)

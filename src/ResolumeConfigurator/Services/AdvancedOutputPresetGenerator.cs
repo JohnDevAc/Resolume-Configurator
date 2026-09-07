@@ -55,14 +55,8 @@ public sealed class AdvancedOutputPresetGenerator
     public async Task<string> SaveAsync(XDocument document, ConfigurationPlan plan, CancellationToken ct)
     {
         Directory.CreateDirectory(plan.PresetDirectory);
-        var path = Path.Combine(plan.PresetDirectory, ArenaPaths.SafeFileName(plan.PresetName, "NDI Job") + ".xml");
-        if (File.Exists(path))
-        {
-            var backup = path + "." + DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture) + ".bak";
-            File.Copy(path, backup, false);
-        }
-        await using var stream = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read);
-        await document.SaveAsync(stream, SaveOptions.None, ct);
+        var path = ArenaPaths.OutputPath(plan.PresetDirectory, plan.PresetName, ".xml");
+        await AtomicFile.WriteXmlAsync(path, document, ct, backup: true);
         return path;
     }
 

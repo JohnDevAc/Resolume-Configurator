@@ -10,27 +10,46 @@ namespace ResolumeConfigurator.Services;
 
 public static class LocalNdiReadinessService
 {
-    public static async Task ValidateAsync(JobSnapshot job, CancellationToken ct)
+    private static readonly HttpClient Client = new(new HttpClientHandler { UseProxy = false, AllowAutoRedirect = false })
+        { Timeout = TimeSpan.FromSeconds(5) };
+
+    public static async Task ValidateAsync(JobSnapshot job, CancellationToken ct) => await ReadIdentityAsync(job, ct);
+
+    public static async Task<LocalAgentIdentity> ReadIdentityAsync(JobSnapshot job, CancellationToken ct)
     {
-        var path = Environment.GetEnvironmentVariable("RESOLUME_PC_AGENT_STATE_PATH")
+        var path = ArenaPaths.ResolveOverride("RESOLUME_PC_AGENT_STATE_PATH")
             ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NDI Configurator", "PC Agent", "agent-state.json");
         if (!File.Exists(path)) throw new InvalidOperationException("Onboard this Arena PC into the selected job using PC Agent before changing Arena. Job Configurator and Discovery can remain remote.");
-        using var state = JsonDocument.Parse(await File.ReadAllTextAsync(path, ct));
+        using var state = await ReadStateAsync(path, ct).ConfigureAwait(false);
         var adapters = NetworkInterface.GetAllNetworkInterfaces().SelectMany(n => n.GetIPProperties().UnicastAddresses
             .Select(address => new LocalAdapterAddress(n.Id, address.Address.ToString(), address.PrefixLength,
                 n.OperationalStatus == OperationalStatus.Up && address.DuplicateAddressDetectionState == DuplicateAddressDetectionState.Preferred)));
         var selected = ValidateLocalState(state.RootElement, adapters);
-        using var handler = new HttpClientHandler { UseProxy = false, AllowAutoRedirect = false };
-        using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(5) };
-        using var response = await client.GetAsync($"http://{selected.Address}:8094/api/v1/status", ct);
+        using var response = await Client.GetAsync($"http://{selected.Address}:8094/api/v1/status", ct).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
         using var status = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
         ValidateStatusIdentity(status.RootElement, selected);
         Validate(status.RootElement, selected.EndpointId, job);
+        return selected;
+    }
+
+    internal static async Task<JsonDocument> ReadStateAsync(string path, CancellationToken ct)
+    {
+        // Retry the current identity only. A stale backup must not choose an old adapter.
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                return await JsonDocument.ParseAsync(stream, cancellationToken: ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (attempt < 2 && ex is IOException or JsonException)
+            { await Task.Delay(80, ct).ConfigureAwait(false); }
+        }
     }
 
     internal sealed record LocalAdapterAddress(string AdapterId, string Address, int Prefix, bool Ready);
-    internal sealed record LocalAgentIdentity(string EndpointId, string AdapterId, string Address, int Prefix);
+    public sealed record LocalAgentIdentity(string EndpointId, string AdapterId, string Address, int Prefix);
 
     internal static LocalAgentIdentity ValidateLocalState(JsonElement state, IEnumerable<LocalAdapterAddress> adapters)
     {
