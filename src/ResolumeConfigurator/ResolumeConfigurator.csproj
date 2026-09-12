@@ -22,5 +22,8 @@
     <InternalsVisibleTo Include="ResolumeConfigurator.Tests" />
     <Resource Include="Assets\app-icon.png" />
     <None Include="..\..\LICENSE" Link="LICENSE" Pack="true" PackagePath="" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\README.md" Link="README.md" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\INTEROPERABILITY.md" Link="INTEROPERABILITY.md" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\docs\releases\v$(Version).md" Link="RELEASE-NOTES.md" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
