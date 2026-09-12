@@ -25,7 +25,7 @@ internal static class RegressionTests
             ExpectInvalid(() => LocalNdiReadinessService.ValidateStatusIdentity(invalid, selected), "mismatched responding identity must fail");
         }
         var identity = new JobIdentity(Guid.NewGuid().ToString(), "job-1", "revision-1");
-        var job = new JobSnapshot("Test", "Remote API", DateTimeOffset.Now, [], identity, "192.0.2.5");
+        var job = new JobSnapshot("Test", "Remote API", DateTimeOffset.Now, [], identity, "192.0.2.5", 1);
         JobRevisionGuard.Validate(identity, job);
         ExpectInvalid(() => JobRevisionGuard.Validate(null, job), "legacy server must be updated before mutation");
         foreach (var other in new[] { identity with { ServerId = Guid.NewGuid().ToString() }, identity with { JobId = "job-2" }, identity with { Revision = "revision-2" } })
@@ -78,7 +78,7 @@ internal static class RegressionTests
             "KV-001 must not overwrite the KV-0010 preset");
         Assert(KiloviewDecoderPresetService.SelectN60Slot([new(1, "KV-0010", "PC (KV-0010)", "", false), new(2, "", "", "", true)], "KV-001", out reused) == 2 && !reused,
             "N60 must preserve a preset whose name merely contains the requested output");
-        Assert(KiloviewDecoderPresetService.SelectN6Slot([new(1, "PC (Arena - KV-001)")], "KV-001", out reused) == 1 && reused,
+        Assert(KiloviewDecoderPresetService.SelectN6Slot([new(1, "PC (Arena - KV-001)", "ndi://192.0.2.10:5961")], "KV-001", out reused, "192.0.2.10") == 1 && reused,
             "Arena's decorated output name must still match");
     }
 

@@ -101,7 +101,7 @@ internal static class StartupDiscoveryTests
                 var firstLine = await reader.ReadLineAsync(deadline.Token);
                 Assert(firstLine == $"GET /ndi/api/{(i % 2 == 0 ? "health" : "state")} HTTP/1.1", "selected base path must survive refreshes");
                 while (!string.IsNullOrEmpty(await reader.ReadLineAsync(deadline.Token))) { }
-                var body = Encoding.UTF8.GetBytes(i % 2 == 0 ? """{"product":"NDI Job Configurator"}""" : """{"lastJob":{"jobName":"Selected job"},"devices":[]}""");
+                var body = Encoding.UTF8.GetBytes(i % 2 == 0 ? """{"product":"NDI Job Configurator"}""" : """{"integrationSchemaVersion":1,"lastJob":{"jobName":"Selected job"},"devices":[]}""");
                 await stream.WriteAsync(Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: {body.Length}\r\n\r\n"), deadline.Token);
                 await stream.WriteAsync(body, deadline.Token);
             }

@@ -1,5 +1,13 @@
 # Job Configurator interoperability
 
+## QA remediation — 12 September 2026
+
+Public job state must explicitly supply numeric `integrationSchemaVersion: 1`. Missing/unsupported schemas have no actionable identity and selected reads fail with a compatibility error. The same requirement applies to cached startup snapshots and refresh guards. The existing schema-1 server contract is sufficient; no server or PC Agent API changes are required.
+
+The restart helper pins a saved graph as well as the job/Agent tuple, requires stable matching IDs and checks that graph during restoration. Existing decoder preset reuse requires a sender URL matching the verified production IPv4 address, preserving foreign presets with the same output label. Local composition changes and process interruption also use the current job/Agent guard.
+
+Per-user parent/worker leases prevent concurrent configuration, parent PID/start time protects helper lifetime, and the main window blocks closing while configuration is active. Recovery records now reference adjacent destination backups to permit separate preference/composition volumes. Save verification establishes a newly created target without assuming timestamp precision. See `QA-REMEDIATION-2026-09-12.md` for recovery and acceptance limits.
+
 ## Audit fixes — 7 September 2026
 
 Decoder sender selection is pinned to the production IPv4 address already verified through the existing schema-1 PC Agent state/status contract. Endpoint, adapter, address and prefix are carried to the restart helper and must remain unchanged. Both N6 and N60 reject senders on other hosts and ambiguous same-host outputs. N60 activation requires the selected URL as well as the output name. No server/agent API or credential-export contract was added, and PC NDI writes remain owned by PC Agent.

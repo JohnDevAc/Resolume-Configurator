@@ -79,6 +79,14 @@ The generated installer is not code-signed. Windows SmartScreen may therefore sh
 
 ## Safety and Arena behavior
 
+Version 0.3.8 addresses the [12 September QA findings](QA-REMEDIATION-2026-09-12.md). Host/channel matching rejects contradictory identities, restoration requires the pinned saved graph, and the selected Job Configurator must explicitly provide numeric integration schema 1. Decoder preset reuse requires the verified sender address as well as its output label; foreign presets are preserved and need free capacity for a new output.
+
+The window cannot close during configuration or helper work. Exclusive per-user leases prevent overlapping operations, and helper requests pin the parent process ID and start time so parent exit cancels pending work. Explicit file patch/archive and process-stop boundaries revalidate the job and Agent; after stopping Arena, cancellation allows a bounded relaunch before returning an error.
+
+Preference commits detect edits made during validation. Their atomic backups use adjacent `.configurator-<GUID>.original` files, allowing composition records to be on another volume; `operation.json` records every backup path. Keep those backups until acceptance. A detected replacement conflict stops later commits and retains the displaced file for review. Existing SimpleOutput documents explicitly enable Advanced Output while respecting the chosen composition-sharing option.
+
+Save verification temporarily moves a prior AVC to an adjacent `.configurator-save-<GUID>.previous` recovery file, then requires a newly created, settled, parseable composition at the original path. This accepts coarse timestamps and identical-content saves without accepting an unchanged old file. Failure restores the prior AVC when the target remains absent, or reports the retained recovery copy when a new target exists. Hard termination can leave a recovery copy for manual restoration.
+
 The selected configurator remains fixed for refreshes, configuration, and the post-restart helper. A lost connection is reported instead of switching to another job or using cached job data. Local state is used only to supplement credentials for the matching current job.
 
 The default Arena data root is Windows' actual Documents folder plus `Resolume Arena`, including normal Documents redirection. There is no guessed OneDrive fallback. The chosen root is displayed in the activity log. Optional environment overrides must be absolute paths (environment-variable expansion is supported):

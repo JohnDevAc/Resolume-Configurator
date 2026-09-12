@@ -14,7 +14,7 @@ public sealed class KiloviewDecoderPresetService
     public KiloviewDecoderPresetService() : this((decoder, n60, ct) => n60 ? AuthorizeN60Async(decoder, ct) : AuthorizeN6Async(decoder, ct)) { }
     internal KiloviewDecoderPresetService(Func<DecoderRow, bool, CancellationToken, Task<HttpClient>> authorize) => _authorize = authorize;
 
-    public async Task ValidateConnectionsAsync(IReadOnlyList<DecoderRow> decoders, CancellationToken ct)
+    public async Task ValidateConnectionsAsync(IReadOnlyList<DecoderRow> decoders, CancellationToken ct, string? expectedSenderAddress = null)
     {
         foreach (var decoder in decoders)
         {
@@ -26,9 +26,9 @@ public sealed class KiloviewDecoderPresetService
                 using var presets = await GetJsonAsync(client, isN60 ? "/api/codec/preset/get" : "/api/preview/get", "check decoder preset access", ct);
                 if (isN60)
                     SelectN60Slot(Data(presets.RootElement).EnumerateArray().Select(item => new N60PresetSummary(
-                        Number(item, "id"), String(item, "channel_name"), String(item, "name"), String(item, "color"), IsN60PresetEmpty(item))), decoder.OutputName, out _);
+                        Number(item, "id"), String(item, "channel_name"), String(item, "name"), String(item, "color"), IsN60PresetEmpty(item), String(item, "original_url", String(item, "url")))), decoder.OutputName, out _, expectedSenderAddress);
                 else
-                    SelectN6Slot(N6Positions(presets.RootElement).Select(item => new N6PresetSummary(Number(item, "id"), String(item, "stream_name"))), decoder.OutputName, out _);
+                    SelectN6Slot(N6Positions(presets.RootElement).Select(item => new N6PresetSummary(Number(item, "id"), String(item, "stream_name"), String(item, "stream_url", String(item, "url")))), decoder.OutputName, out _, expectedSenderAddress);
             }
             catch (Exception ex) when (!ct.IsCancellationRequested && (ex is HttpRequestException or InvalidOperationException or OperationCanceledException))
             {
@@ -71,10 +71,12 @@ public sealed class KiloviewDecoderPresetService
         return results;
     }
 
-    public static int SelectN60Slot(IEnumerable<N60PresetSummary> presets, string outputName, out bool reused)
+    public static int SelectN60Slot(IEnumerable<N60PresetSummary> presets, string outputName, out bool reused, string? expectedSenderAddress = null)
     {
         var rows = presets.Where(preset => preset.Id > 0 && string.IsNullOrWhiteSpace(preset.Color)).OrderBy(preset => preset.Id).ToArray();
-        var existing = rows.FirstOrDefault(preset => MatchesOutput(preset.ChannelName, preset.Name, outputName));
+        var owned = rows.Where(preset => MatchesOutput(preset.ChannelName, preset.Name, outputName) && OwnsPreset(preset.SourceUrl, expectedSenderAddress)).ToArray();
+        if (owned.Length > 1) throw new InvalidOperationException("Multiple matching presets belong to this sender. Review the decoder presets before retrying.");
+        var existing = owned.SingleOrDefault();
         if (existing is not null)
         {
             reused = true;
@@ -87,10 +89,12 @@ public sealed class KiloviewDecoderPresetService
         return empty.Id;
     }
 
-    public static int SelectN6Slot(IEnumerable<N6PresetSummary> presets, string outputName, out bool reused)
+    public static int SelectN6Slot(IEnumerable<N6PresetSummary> presets, string outputName, out bool reused, string? expectedSenderAddress = null)
     {
         var rows = presets.Where(preset => preset.Id > 0).ToArray();
-        var existing = rows.FirstOrDefault(preset => MatchesOutput("", preset.StreamName, outputName));
+        var owned = rows.Where(preset => MatchesOutput("", preset.StreamName, outputName) && OwnsPreset(preset.StreamUrl, expectedSenderAddress)).ToArray();
+        if (owned.Length > 1) throw new InvalidOperationException("Multiple matching presets belong to this sender. Review the decoder presets before retrying.");
+        var existing = owned.SingleOrDefault();
         if (existing is not null)
         {
             reused = true;
@@ -104,6 +108,10 @@ public sealed class KiloviewDecoderPresetService
         reused = false;
         return 0;
     }
+
+    private static bool OwnsPreset(string url, string? expectedAddress) =>
+        IPAddress.TryParse(expectedAddress, out var expected) && TryGetHost(url, out var host)
+        && IPAddress.TryParse(host, out var actual) && actual.Equals(expected);
 
     public static bool IsSameN6Source(string existingId, string existingUrl, string discoveredId, string discoveredUrl)
     {
@@ -193,8 +201,8 @@ public sealed class KiloviewDecoderPresetService
             String(element, "channel_name"),
             String(element, "name"),
             String(element, "color"),
-            IsN60PresetEmpty(element))).ToArray();
-        var slot = SelectN60Slot(presets, decoder.OutputName, out var reused);
+            IsN60PresetEmpty(element), String(element, "original_url", String(element, "url")))).ToArray();
+        var slot = SelectN60Slot(presets, decoder.OutputName, out var reused, expectedSenderAddress);
         var source = await FindN60SourceAsync(client, decoder.OutputName, expectedSenderAddress, ct);
 
         if (validateJob is not null) await validateJob(ct);
@@ -237,7 +245,7 @@ public sealed class KiloviewDecoderPresetService
         var presets = presetElements
             .Select(element => new N6PresetSummary(Number(element, "id"), String(element, "stream_name"), String(element, "stream_url", String(element, "url"))))
             .ToArray();
-        var slot = SelectN6Slot(presets, decoder.OutputName, out var reused);
+        var slot = SelectN6Slot(presets, decoder.OutputName, out var reused, expectedSenderAddress);
         var source = await FindN6SourceAsync(client, decoder.OutputName, expectedSenderAddress, ct);
 
         var streamId = String(source, "id");
@@ -267,7 +275,9 @@ public sealed class KiloviewDecoderPresetService
         if (!alreadyCurrent)
         {
             using var verifiedPresets = await GetJsonAsync(client, "/api/preview/get", "verify N6 preset", ct);
-            var retained = N6Positions(verifiedPresets.RootElement).FirstOrDefault(item => MatchesOutput(String(item, "stream_name"), "", decoder.OutputName));
+            var retained = N6Positions(verifiedPresets.RootElement).FirstOrDefault(item => MatchesOutput(String(item, "stream_name"), "", decoder.OutputName)
+                && String(item, "stream_url", String(item, "url")).Equals(streamUrl, StringComparison.OrdinalIgnoreCase)
+                && (!reused || Number(item, "id") == slot));
             retainedSlot = Number(retained, "id");
             if (retained.ValueKind != JsonValueKind.Object || retainedSlot <= 0 || (reused && retainedSlot != slot))
                 throw new InvalidOperationException(reused

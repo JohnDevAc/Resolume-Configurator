@@ -46,7 +46,7 @@ public sealed class NdiJobConfiguratorReader
     }
 
     internal Task<JobSnapshot> ReadInitialAsync(JobSnapshot? discoveredSnapshot, CancellationToken ct = default) =>
-        discoveredSnapshot is not null && discoveredSnapshot.Source.Equals(_selectedAddress, StringComparison.OrdinalIgnoreCase)
+        discoveredSnapshot is { IntegrationSchemaVersion: 1 } && discoveredSnapshot.Source.Equals(_selectedAddress, StringComparison.OrdinalIgnoreCase)
         && DateTimeOffset.Now - discoveredSnapshot.ReadAt is var age && age >= TimeSpan.Zero && age < TimeSpan.FromSeconds(5)
             ? MergeLocalCredentialsAsync(discoveredSnapshot, ct) : ReadAsync(ct);
 
@@ -82,10 +82,12 @@ public sealed class NdiJobConfiguratorReader
         var serverId = GetString(root, "serverId");
         var jobId = GetString(root, "jobId");
         var revision = GetString(root, "jobRevision");
-        var identity = Guid.TryParse(serverId, out var serverGuid) && serverGuid != Guid.Empty
+        var schema = root.TryGetProperty("integrationSchemaVersion", out var schemaValue)
+            && schemaValue.ValueKind == JsonValueKind.Number && schemaValue.TryGetInt32(out var parsedSchema) ? parsedSchema : 0;
+        var identity = schema == 1 && Guid.TryParse(serverId, out var serverGuid) && serverGuid != Guid.Empty
             && !string.IsNullOrWhiteSpace(jobId) && !string.IsNullOrWhiteSpace(revision)
                 ? new JobIdentity(serverId!, jobId, revision) : null;
-        return new JobSnapshot(jobName, source, DateTimeOffset.Now, devices, identity, GetString(root, "lastJob", "ndiDiscoveryServerIp"));
+        return new JobSnapshot(jobName, source, DateTimeOffset.Now, devices, identity, GetString(root, "lastJob", "ndiDiscoveryServerIp"), schema);
     }
 
     private async Task<JobSnapshot> MergeLocalCredentialsAsync(JobSnapshot snapshot, CancellationToken cancellationToken)
@@ -153,7 +155,10 @@ public sealed class NdiJobConfiguratorReader
             if (!stateResponse.IsSuccessStatusCode) return null;
             using var state = JsonDocument.Parse(await stateResponse.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false));
             if (!IsSnapshot(state.RootElement)) return null;
-            return ParseSnapshot(state.RootElement, root);
+            var snapshot = ParseSnapshot(state.RootElement, root);
+            if (reportTimeout && snapshot.IntegrationSchemaVersion != 1)
+                throw new InvalidOperationException("The selected Job Configurator must provide integration schema 1. Update the compatible suite applications and reload the job; missing or unsupported schemas cannot authorize changes.");
+            return snapshot;
         }
         catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested && reportTimeout)
         { throw new HttpRequestException($"The selected Job Configurator at {root} did not complete its health/state response within {requestTimeout.TotalSeconds:0.#} seconds.", ex); }

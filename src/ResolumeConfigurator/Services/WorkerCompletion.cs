@@ -4,7 +4,7 @@ using ResolumeConfigurator.Models;
 namespace ResolumeConfigurator.Services;
 
 internal sealed record RestartRequest(string OperationId, string JobName, string ConfiguratorUrl, JobIdentity ExpectedJob,
-    LocalNdiReadinessService.LocalAgentIdentity Agent, PostRestartComposition Composition);
+    LocalNdiReadinessService.LocalAgentIdentity Agent, PostRestartComposition Composition, int ParentProcessId = 0, long ParentStartUtcTicks = 0);
 internal sealed record WorkerOutcome(string OperationId, bool Success, string? Error, IReadOnlyList<DecoderPresetResult> Decoders);
 
 internal static class WorkerCompletion

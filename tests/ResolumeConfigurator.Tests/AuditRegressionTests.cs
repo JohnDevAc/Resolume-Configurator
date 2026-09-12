@@ -17,7 +17,7 @@ internal static class AuditRegressionTests
     {
         var device = ValidPlan().Encoders[0].Device with { Hostname = "TT-001", NdiChannelName = "TT-001" };
         Assert(SourceMatcher.BestMatch(device, [new("TT-0010", "TT-0010", "NDI Servers")]) is null, "numeric prefixes cannot auto-match");
-        Assert(SourceMatcher.BestMatch(device, [new("x", "TT-001 (Main)", "NDI Servers")])?.IdString == "x", "complete NDI host component matches");
+        Assert(SourceMatcher.BestMatch(device with { NdiChannelName = "Main" }, [new("x", "TT-001 (Main)", "NDI Servers")])?.IdString == "x", "complete NDI host and channel match");
         Assert(SourceMatcher.BestMatch(device with { Hostname = "Camerá-1", NdiChannelName = "" },
             [new("x", "Camer-1", "NDI Servers")]) is null, "removing Unicode or punctuation cannot turn different identities into a match");
         Assert(SourceMatcher.BestMatch(device with { Hostname = "Κάμερα", NdiChannelName = "" },
@@ -248,7 +248,7 @@ internal static class AuditRegressionTests
                 using var reader = new StreamReader(stream, Encoding.ASCII, leaveOpen: true);
                 while (!string.IsNullOrEmpty(await reader.ReadLineAsync(deadline.Token))) { }
                 if (index == 1) await Task.Delay(1000, deadline.Token);
-                var body = Encoding.UTF8.GetBytes(index == 0 ? """{"product":"NDI Job Configurator"}""" : """{"lastJob":{"jobName":"Slow but reachable"},"devices":[]}""");
+                var body = Encoding.UTF8.GetBytes(index == 0 ? """{"product":"NDI Job Configurator"}""" : """{"integrationSchemaVersion":1,"lastJob":{"jobName":"Slow but reachable"},"devices":[]}""");
                 await stream.WriteAsync(Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: {body.Length}\r\n\r\n"), deadline.Token);
                 await stream.WriteAsync(body, deadline.Token);
             }

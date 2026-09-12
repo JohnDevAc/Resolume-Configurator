@@ -7,7 +7,7 @@ public sealed class ArenaRestartService
 {
     public async Task<IReadOnlyList<DecoderPresetResult>> RestartAsync(string compositionFile, string expectedJobName, IProgress<string>? progress, CancellationToken ct,
         int sourceStartColumn, int sourceCount, string? configuratorUrl, JobIdentity? expectedJob,
-        string operationDirectory, string operationId, LocalNdiReadinessService.LocalAgentIdentity expectedAgent)
+        string operationDirectory, string operationId, LocalNdiReadinessService.LocalAgentIdentity expectedAgent, Func<CancellationToken, Task> validateCurrent)
     {
         if (!File.Exists(compositionFile)) throw new FileNotFoundException("The saved job composition was not found before restart.", compositionFile);
         var companionPath = Environment.ProcessPath
@@ -15,11 +15,15 @@ public sealed class ArenaRestartService
         ValidateCompanionLaunch();
         var requestFile = Path.Combine(operationDirectory, "worker-request.json");
         var resultFile = Path.Combine(operationDirectory, "worker-result.json");
+        var expectedGraphFile = Path.Combine(operationDirectory, "expected-composition.xml");
+        using var parent = Process.GetCurrentProcess();
+        await AtomicFile.WriteXmlAsync(expectedGraphFile, System.Xml.Linq.XDocument.Load(compositionFile), ct);
         await AtomicFile.WriteJsonAsync(requestFile, new RestartRequest(operationId, expectedJobName,
             configuratorUrl ?? throw new InvalidOperationException("A selected configurator is required."),
             expectedJob ?? throw new InvalidOperationException("A job identity is required."), expectedAgent,
-            new(compositionFile, sourceStartColumn, sourceCount)), ct);
-        await RestartArenaAsync(compositionFile, ct).ConfigureAwait(false);
+            new(compositionFile, sourceStartColumn, sourceCount, expectedGraphFile), Environment.ProcessId,
+            parent.StartTime.ToUniversalTime().Ticks), ct);
+        await RestartArenaAsync(compositionFile, ct, validateCurrent).ConfigureAwait(false);
         progress?.Report("Restarted Arena after saving the composition and active Advanced Output XML.");
         var start = CreateCompanionStartInfo(companionPath);
         start.ArgumentList.Add("--post-restart-request");
@@ -73,7 +77,7 @@ public sealed class ArenaRestartService
         return start;
     }
 
-    internal async Task RestartArenaAsync(string compositionFile, CancellationToken ct)
+    internal async Task RestartArenaAsync(string compositionFile, CancellationToken ct, Func<CancellationToken, Task> validateCurrent)
     {
         ValidateRunningArena();
         if (!File.Exists(compositionFile)) throw new FileNotFoundException("The saved composition was not found before restart.", compositionFile);
@@ -94,13 +98,28 @@ public sealed class ArenaRestartService
             // not hot-reload AdvancedOutput.xml. All composition work is saved and
             // backed up before this point, so stop the process before it can write
             // its stale in-memory Advanced Output state back over the new XML.
-            arena.Kill(entireProcessTree: true);
-            await arena.WaitForExitAsync(ct).ConfigureAwait(false);
+            await RestartProcessAsync(validateCurrent, () => arena.Kill(entireProcessTree: true),
+                token => arena.WaitForExitAsync(token), () =>
+                {
+                    using var restarted = Process.Start(CreateArenaStartInfo(executablePath, compositionFile))
+                        ?? throw new InvalidOperationException("Windows did not start Resolume Arena.");
+                }, Task.Delay, ct).ConfigureAwait(false);
         }
-        await Task.Delay(1200, ct).ConfigureAwait(false);
+    }
 
-        using var restartedArena = Process.Start(CreateArenaStartInfo(executablePath, compositionFile))
-            ?? throw new InvalidOperationException("Windows did not start Resolume Arena.");
+    internal static async Task RestartProcessAsync(Func<CancellationToken, Task> validateCurrent, Action stop,
+        Func<CancellationToken, Task> waitForExit, Action start, Func<TimeSpan, CancellationToken, Task> delay, CancellationToken ct)
+    {
+        await validateCurrent(ct).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();
+        stop();
+        // Once stopped, finish the bounded relaunch even if the caller cancels.
+        // Cancellation must not strand Arena between stop and start.
+        using var recovery = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        await waitForExit(recovery.Token).WaitAsync(recovery.Token).ConfigureAwait(false);
+        await delay(TimeSpan.FromMilliseconds(1200), recovery.Token).ConfigureAwait(false);
+        start();
+        ct.ThrowIfCancellationRequested();
     }
 
     internal static ProcessStartInfo CreateArenaStartInfo(string executablePath, string compositionFile)

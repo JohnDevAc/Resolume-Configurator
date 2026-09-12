@@ -43,11 +43,16 @@ internal static class WpfRegressionTests
                     "configuration and editing remain disabled until the restart worker completes");
                 Invoke(window, "WindowMessageHook", IntPtr.Zero, 0x8001, new IntPtr(1), IntPtr.Zero, false);
                 RegressionTests.Assert(!window.ConfigureButton.IsEnabled, "an uncorrelated window message must not unlock an active operation");
+                var closed = false;
+                window.Closed += (_, _) => closed = true;
+                window.Close();
+                RegressionTests.Assert(!closed, "closing is blocked while the configuration/helper is active");
                 Invoke(window, "CompleteConfiguration", 1);
                 RegressionTests.Assert(window.ConfigureButton.IsEnabled && window.RefreshDetectionButton.IsEnabled && window.ConfigurationInputs.IsEnabled,
                     "worker completion restores the controls");
                 RegressionTests.Assert(window.ConfigurationProgress.Value == 100, "worker success completes the progress bar");
                 window.Close();
+                RegressionTests.Assert(closed, "closing succeeds after verified operation completion");
                 StartupDiscoveryTests.RunWindows();
             }
             catch (Exception ex) { failure = ex; }

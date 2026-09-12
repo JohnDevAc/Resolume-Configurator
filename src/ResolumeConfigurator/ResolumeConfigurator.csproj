@@ -16,7 +16,7 @@
     <Copyright>Copyright © 2026 John Lightfoot. All rights reserved.</Copyright>
     <PackageLicenseFile>LICENSE</PackageLicenseFile>
     <PackageRequireLicenseAcceptance>true</PackageRequireLicenseAcceptance>
-    <Version>0.3.7</Version>
+    <Version>0.3.8</Version>
   </PropertyGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="ResolumeConfigurator.Tests" />

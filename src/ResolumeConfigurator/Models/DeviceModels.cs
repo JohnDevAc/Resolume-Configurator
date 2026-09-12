@@ -22,7 +22,7 @@ public sealed record DecoderPresetResult(string DecoderName, string Family, int 
 
 public sealed record JobIdentity(string ServerId, string JobId, string Revision);
 public sealed record JobSnapshot(string JobName, string Source, DateTimeOffset ReadAt, IReadOnlyList<JobDevice> Devices,
-    JobIdentity? Identity = null, string? DiscoveryServer = null);
+    JobIdentity? Identity = null, string? DiscoveryServer = null, int IntegrationSchemaVersion = 0);
 
 public abstract class ObservableRow : INotifyPropertyChanged
 {

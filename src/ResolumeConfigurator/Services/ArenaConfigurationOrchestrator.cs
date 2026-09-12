@@ -12,6 +12,7 @@ public sealed class ArenaConfigurationOrchestrator
 
     public async Task<ConfigurationResult> ConfigureAsync(ConfigurationPlan plan, IProgress<string>? progress, CancellationToken ct)
     {
+        using var ownership = ConfigurationOwnership.AcquireParent();
         var log = new List<string>();
         void Report(string message) { log.Add(message); progress?.Report(message); }
         using var api = new ResolumeApiClient();
@@ -38,7 +39,7 @@ public sealed class ArenaConfigurationOrchestrator
         try
         {
             Report($"Connected to {product}.");
-            await new KiloviewDecoderPresetService().ValidateConnectionsAsync(plan.Decoders, ct);
+            await new KiloviewDecoderPresetService().ValidateConnectionsAsync(plan.Decoders, ct, expectedAgent.Address);
             Report($"Verified login and preset capacity for all {plan.Decoders.Count} decoders.");
 
             await JobRevisionGuard.RefreshAsync(plan.ConfiguratorUrl, plan.ExpectedJob, ct);
@@ -170,13 +171,15 @@ public sealed class ArenaConfigurationOrchestrator
             if (File.Exists(compositionFile))
             {
                 var archivedComposition = ArenaPaths.OutputPath(plan.CompositionDirectory, $"{plan.CompositionName} Previous {stamp}", ".avc");
+                await api.BeforeMutation(ct);
+                ct.ThrowIfCancellationRequested();
                 File.Move(compositionFile, archivedComposition);
                 files.PreviousComposition = archivedComposition;
                 await files.RecordAsync("previous job file archived", null, ct);
                 Report($"Archived the previous same-named composition as {Path.GetFileName(archivedComposition)}.");
             }
             await api.SaveCompositionAsync(compositionFile, ct);
-            await PatchCompositionAsync(compositionFile, plan.FramesPerSecond, groupIndices["Show"], plan.Decoders.Count, ct);
+            await PatchCompositionAsync(compositionFile, plan.FramesPerSecond, groupIndices["Show"], plan.Decoders.Count, ct, api.BeforeMutation);
 
             // The current composition already has the job name. Give the live graph a
             // temporary marker so OpenCompositionAsync cannot mistake the old graph
@@ -234,7 +237,7 @@ public sealed class ArenaConfigurationOrchestrator
             api.Dispose();
             var activated = await new ArenaRestartService().RestartAsync(compositionFile, plan.CompositionName, progress, ct,
                 plan.SourceStartColumn, plan.AutoPlaceNdiSources ? plan.Encoders.Count : 0, plan.ConfiguratorUrl, plan.ExpectedJob,
-                files.OperationDirectory, files.OperationId, expectedAgent);
+                files.OperationDirectory, files.OperationId, expectedAgent, api.BeforeMutation);
             await files.RecordAsync("complete", null, ct);
             Report($"Configuration complete: {activated.Count} decoder banks active.");
             return new ConfigurationResult(compositionFile, files.PresetFile, files.CompositionBackup, log, activated);
@@ -395,12 +398,14 @@ public sealed class ArenaConfigurationOrchestrator
                 layerName.Equals("Secondary", StringComparison.OrdinalIgnoreCase) ? "1" : "0");
         }
     }
-    internal static async Task PatchCompositionAsync(string path, int fps, int showIndex, int routers, CancellationToken ct)
+    internal static async Task PatchCompositionAsync(string path, int fps, int showIndex, int routers, CancellationToken ct, Func<CancellationToken, Task> validateCurrent)
     {
         var document = XDocument.Load(path, LoadOptions.PreserveWhitespace);
         SetCompositionFrameRate(document, fps);
         SetVideoRouterInputs(document, showIndex, routers);
         SetCollapsedLayerStates(document);
+        await validateCurrent(ct);
+        ct.ThrowIfCancellationRequested();
         await AtomicFile.WriteXmlAsync(path, document, ct);
     }
 

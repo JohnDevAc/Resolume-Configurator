@@ -1,6 +1,5 @@
 using System.Windows;
 using ResolumeConfigurator.Services;
-using ResolumeConfigurator.Models;
 
 namespace ResolumeConfigurator;
 
@@ -28,12 +27,8 @@ public partial class App : Application
         if (e.Args.Length >= 2 && e.Args[0].Equals("--post-restart", StringComparison.OrdinalIgnoreCase))
         {
             ShutdownMode = ShutdownMode.OnExplicitShutdown;
-            int? parentProcessId = e.Args.Length >= 3 && int.TryParse(e.Args[2], out var processId) && processId > 0 ? processId : null;
-            var restoration = e.Args.Length >= 6 && int.TryParse(e.Args[4], out var startColumn) && int.TryParse(e.Args[5], out var sourceCount)
-                ? new PostRestartComposition(e.Args[3], startColumn, sourceCount) : null;
-            var configuratorUrl = e.Args.Length >= 7 ? e.Args[6] : null;
-            var expectedJob = e.Args.Length >= 10 ? new JobIdentity(e.Args[7], e.Args[8], e.Args[9]) : null;
-            _ = RunPostRestartWorkerAsync(e.Args[1], parentProcessId, restoration, configuratorUrl, expectedJob);
+            // Legacy requests lack a pinned parent lifetime and shared ownership.
+            Shutdown(1);
             return;
         }
 
@@ -49,22 +44,6 @@ public partial class App : Application
         MainWindow.Show();
     }
 
-    private async Task RunPostRestartWorkerAsync(string expectedJobName, int? parentProcessId, PostRestartComposition? restoration, string? configuratorUrl, JobIdentity? expectedJob)
-    {
-        try
-        {
-            var result = await new PostRestartWorker().RunAsync(expectedJobName, CancellationToken.None, restoration, configuratorUrl, expectedJob);
-            await MainWindowFocusService.ReturnToMainWindowAsync(
-                $"complete — {result.Count} decoder banks active", CancellationToken.None, parentProcessId);
-        }
-        catch (Exception ex)
-        {
-            await MainWindowFocusService.ReturnToMainWindowAsync(
-                $"decoder activation failed — {ex.Message}", CancellationToken.None, parentProcessId);
-        }
-        finally { Shutdown(); }
-    }
-
     private async Task RunTrackedWorkerAsync(string requestFile)
     {
         var exitCode = 1;
@@ -74,8 +53,11 @@ public partial class App : Application
             request = System.Text.Json.JsonSerializer.Deserialize<RestartRequest>(await File.ReadAllTextAsync(requestFile))
                 ?? throw new InvalidDataException("The restart request is empty.");
             using var deadline = new CancellationTokenSource(WorkerCompletion.WorkerTimeout);
-            var decoders = await new PostRestartWorker().RunAsync(request.JobName, deadline.Token, request.Composition,
-                request.ConfiguratorUrl, request.ExpectedJob, request.Agent);
+            await using var parent = new ParentLifetime(request.ParentProcessId, request.ParentStartUtcTicks, deadline.Token);
+            using var ownership = ConfigurationOwnership.AcquireWorker();
+            parent.Validate();
+            var decoders = await new PostRestartWorker().RunAsync(request.JobName, parent.Token, request.Composition,
+                request.ConfiguratorUrl, request.ExpectedJob, request.Agent, parent.Validate);
             await AtomicFile.WriteJsonAsync(Path.Combine(Path.GetDirectoryName(requestFile)!, "worker-result.json"),
                 new WorkerOutcome(request.OperationId, true, null, decoders), CancellationToken.None);
             exitCode = 0;

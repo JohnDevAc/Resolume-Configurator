@@ -1,4 +1,5 @@
 using System.Net.Http;
+using System.Xml.Linq;
 using ResolumeConfigurator.Models;
 
 namespace ResolumeConfigurator.Services;
@@ -18,7 +19,7 @@ public sealed class PostRestartWorker
 
     public async Task<IReadOnlyList<DecoderPresetResult>> RunAsync(string expectedJobName, CancellationToken ct,
         PostRestartComposition? restoration = null, string? configuratorUrl = null, JobIdentity? expectedJob = null,
-        LocalNdiReadinessService.LocalAgentIdentity? expectedAgent = null)
+        LocalNdiReadinessService.LocalAgentIdentity? expectedAgent = null, Action? validateOwnership = null)
     {
         // This is a fresh process launched immediately after replacement Arena.
         // Give Arena a full 15 seconds to load Advanced Output and publish its
@@ -52,9 +53,11 @@ public sealed class PostRestartWorker
 
         async Task ValidateCurrentAsync(CancellationToken token)
         {
+            validateOwnership?.Invoke();
             var current = await JobRevisionGuard.RefreshAsync(configuratorUrl, expectedJob, token).ConfigureAwait(false);
             if (await LocalNdiReadinessService.ReadIdentityAsync(current, token).ConfigureAwait(false) != agent)
                 throw new InvalidOperationException("The production PC Agent identity changed during configuration.");
+            validateOwnership?.Invoke();
         }
 
         if (restoration is not null)
@@ -68,28 +71,40 @@ public sealed class PostRestartWorker
         PostRestartComposition restoration, CancellationToken ct, Func<CancellationToken, Task> validateCurrent)
     {
         ArgumentNullException.ThrowIfNull(validateCurrent);
+        var saved = XDocument.Load(restoration.ExpectedGraphFile ?? restoration.CompositionFile);
+        if (saved.Root?.Name.LocalName != "Composition") throw new InvalidDataException("The expected restart graph is not an Arena composition.");
         using var api = _createApi();
-        api.BeforeMutation = validateCurrent;
+        bool Matches(ArenaCompositionState candidate) =>
+            (candidate.Name.Equals(Path.GetFileNameWithoutExtension(restoration.CompositionFile), StringComparison.OrdinalIgnoreCase)
+                || candidate.Name.Equals(expectedJobName, StringComparison.OrdinalIgnoreCase))
+            && ArenaCompositionSynchronizationService.MatchesSavedStructure(saved, candidate);
+        api.BeforeMutation = async token =>
+        {
+            await validateCurrent(token).ConfigureAwait(false);
+            var current = await api.GetCompositionStateAsync(token).ConfigureAwait(false);
+            if (!Matches(current)) throw new InvalidOperationException("Arena's composition changed during restart restoration. No further writes were made.");
+            ResolveRestorationClips(current, decoderNames, restoration.SourceStartColumn, restoration.SourceCount);
+        };
         ArenaCompositionState? state = null;
         var deadline = DateTime.UtcNow.AddSeconds(60);
-        var filename = Path.GetFileNameWithoutExtension(restoration.CompositionFile);
+        var stable = 0;
         while (DateTime.UtcNow < deadline)
         {
             ct.ThrowIfCancellationRequested();
             try
             {
                 var candidate = await api.GetCompositionStateAsync(ct).ConfigureAwait(false);
-                if (candidate.Name.Equals(filename, StringComparison.OrdinalIgnoreCase)
-                    || candidate.Name.Equals(expectedJobName, StringComparison.OrdinalIgnoreCase))
+                stable = Matches(candidate) ? stable + 1 : 0;
+                if (stable >= 3)
                 {
                     state = candidate;
                     break;
                 }
             }
-            catch (Exception ex) when (!ct.IsCancellationRequested && (ex is HttpRequestException or OperationCanceledException)) { }
+            catch (Exception ex) when (!ct.IsCancellationRequested && (ex is HttpRequestException or OperationCanceledException)) { stable = 0; }
             await _delay(TimeSpan.FromMilliseconds(500), ct).ConfigureAwait(false);
         }
-        if (state is null) throw new InvalidOperationException("Arena did not reopen the saved job composition after restart.");
+        if (state is null) throw new InvalidOperationException("Arena did not reopen the expected saved graph after restart. The saved composition has been retained.");
 
         var clips = ResolveRestorationClips(state, decoderNames, restoration.SourceStartColumn, restoration.SourceCount);
         foreach (var clipId in clips.NdiClipIds)
@@ -114,7 +129,8 @@ public sealed class PostRestartWorker
         if (sourceStartColumn < 1 || sourceCount < 0) throw new InvalidOperationException("Invalid post-restart source placement.");
         var expectedNames = decoderNames.Concat(new[] { "LED Wall", "Show" }).ToArray();
         if (!state.Groups.Select(group => group.Name).SequenceEqual(expectedNames, StringComparer.OrdinalIgnoreCase)
-            || state.Groups.Any(group => group.Layers.Count != 3) || state.Layers.Count != expectedNames.Length * 3)
+            || state.Groups.Any(group => !group.Layers.Select(layer => layer.Name).SequenceEqual(new[] { "Holding", "Secondary", "Primary" }, StringComparer.OrdinalIgnoreCase))
+            || state.Layers.Count != expectedNames.Length * 3)
             throw new InvalidOperationException("Arena's restarted composition does not contain the expected job groups and layers.");
         var ndi = new List<long>();
         var routers = new List<long>();
@@ -132,4 +148,4 @@ public sealed class PostRestartWorker
     }
 }
 
-public sealed record PostRestartComposition(string CompositionFile, int SourceStartColumn, int SourceCount);
+public sealed record PostRestartComposition(string CompositionFile, int SourceStartColumn, int SourceCount, string? ExpectedGraphFile = null);

@@ -62,6 +62,16 @@ public partial class MainWindow : Window
         Loaded += async (_, _) => await InitializeAsync();
     }
 
+    protected override void OnClosing(CancelEventArgs e)
+    {
+        base.OnClosing(e);
+        if (_decoderHelperPending)
+        {
+            e.Cancel = true;
+            Title = "Resolume Arena Configurator — configuration in progress; wait for completion before closing";
+        }
+    }
+
     private async Task InitializeAsync()
     {
         SetBusy(true);

@@ -25,7 +25,8 @@ public sealed class ArenaCompositionSynchronizationService
         if (MatchesSavedStructure(saved, state)) return state;
 
         progress?.Report("Arena's API contains stale layers or clips. Restarting with the saved open composition.");
-        await new ArenaRestartService().RestartArenaAsync(backup, ct);
+        await new ArenaRestartService().RestartArenaAsync(backup, ct,
+            api.BeforeMutation ?? throw new InvalidOperationException("A current job and Agent guard is required before restarting Arena."));
         using var freshApi = new ResolumeApiClient(timeout: TimeSpan.FromSeconds(5));
         var deadline = DateTime.UtcNow.AddSeconds(90);
         while (DateTime.UtcNow < deadline)

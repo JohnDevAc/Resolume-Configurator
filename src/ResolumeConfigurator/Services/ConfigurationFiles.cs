@@ -106,20 +106,23 @@ internal sealed class ConfigurationFiles
             {
                 await validate(ct);
                 writingOutput = true;
-                string? backup = null;
-                if (File.Exists(target))
-                {
-                    backup = Path.Combine(OperationDirectory, staged + ".original");
-                    File.Copy(target, backup, false);
-                }
+                // Windows atomic replacement requires the backup on the target's
+                // volume; the composition/recovery directory may be on another drive.
+                var backup = _originals[target] is null ? null : AtomicFile.ReplacementBackupName(target);
                 _changes.Add(new(target, backup, "pending"));
                 await RecordAsync("committing output files", null, ct);
-                await AtomicFile.WriteXmlAsync(target, XDocument.Load(Path.Combine(OperationDirectory, staged)), ct);
+                await AtomicFile.WriteXmlCheckedAsync(target, XDocument.Load(Path.Combine(OperationDirectory, staged)), _originals[target], backup, ct);
                 _committed.Add(target);
                 _changes[^1] = new(target, backup, "committed");
                 await RecordAsync("committing output files", null, ct);
                 writingOutput = false;
             }
+        }
+        catch (AtomicFile.FileChangedException ex)
+        {
+            _changes[^1] = _changes[^1] with { Status = ex.Replaced ? "conflict; replaced file retained in backup" : "changed before replacement" };
+            await RecordAsync("output conflict; review backups", ex.Message, CancellationToken.None);
+            throw;
         }
         catch (Exception ex) when (writingOutput && (ex is IOException or UnauthorizedAccessException))
         {

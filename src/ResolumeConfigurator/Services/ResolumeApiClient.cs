@@ -152,23 +152,53 @@ public sealed class ResolumeApiClient : IPostRestartArenaApi
     public async Task SaveCompositionAsync(string path, CancellationToken ct)
     {
         await ValidateMutationAsync(ct);
-        var started = DateTime.UtcNow;
-        var original = FileStamp(path);
+        ct.ThrowIfCancellationRequested();
+        // Absence at dispatch establishes fresh-save evidence even on filesystems
+        // with coarse/skewed timestamps or when Arena saves identical XML bytes.
+        string? previous = null;
+        if (File.Exists(path))
+        {
+            previous = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(path))!, $".configurator-save-{Guid.NewGuid():N}.previous");
+            File.Move(path, previous, false);
+        }
         (DateTime WriteUtc, long Length) observed = (default, -1);
         var stable = 0;
-        await VerifiedPostAsync("composition/save", ToFileUrl(path), "text/plain", (_, _) =>
+        try
         {
-            var current = FileStamp(path);
-            if (current != original && current.Length > 0 && current.WriteUtc >= started)
+            await VerifiedPostAsync("composition/save", ToFileUrl(path), "text/plain", (_, _) =>
             {
-                stable = current == observed ? stable + 1 : 1;
-                observed = current;
-                // Parse only after metadata settles, including for a fast HTTP 200.
-                return Task.FromResult(stable >= 5 && IsCompleteCompositionFile(path));
+                var current = FileStamp(path);
+                if (current.Length > 0)
+                {
+                    stable = current == observed ? stable + 1 : 1;
+                    observed = current;
+                    return Task.FromResult(stable >= 5 && IsCompleteCompositionFile(path));
+                }
+                stable = 0;
+                return Task.FromResult(false);
+            }, ct);
+        }
+        catch (Exception ex)
+        {
+            if (previous is not null)
+            {
+                if (!File.Exists(path))
+                {
+                    try { File.Move(previous, path, false); }
+                    catch (IOException) { /* A concurrent writer may have recreated the target; retain the prior bytes. */ }
+                }
+                if (File.Exists(previous))
+                {
+                    var message = $"Arena save was not verified. The prior composition is retained at {previous}. {ex.Message}";
+                    if (ex is OperationCanceledException) throw new OperationCanceledException(message, ex, ct);
+                    throw new IOException(message, ex);
+                }
             }
-            stable = 0;
-            return Task.FromResult(false);
-        }, ct);
+            throw;
+        }
+        // The verified file is authoritative; a locked recovery copy may safely remain.
+        if (previous is not null)
+            try { File.Delete(previous); } catch (IOException) { } catch (UnauthorizedAccessException) { }
     }
 
     public async Task OpenCompositionAsync(string path, string expectedCompositionName, CancellationToken ct)

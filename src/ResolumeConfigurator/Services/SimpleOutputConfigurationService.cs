@@ -22,6 +22,7 @@ public sealed class SimpleOutputConfigurationService
         if (root?.Name.LocalName != "SimpleSetup")
             throw new InvalidDataException("Resolume's SimpleOutput.xml does not contain a SimpleSetup root.");
 
+        root.SetAttributeValue("advancedModeEnabled", "1");
         var outputs = root.Element("Outputs");
         if (outputs is null)
         {
@@ -52,7 +53,7 @@ public sealed class SimpleOutputConfigurationService
         {
             var document = XDocument.Load(preferenceFile);
             var enabled = document.Root?.Element("Outputs")?.Elements("OutputDeviceNDI").Any() == true;
-            return enabled == expectedEnabled;
+            return document.Root?.Attribute("advancedModeEnabled")?.Value == "1" && enabled == expectedEnabled;
         }
         catch (IOException) { return false; }
         catch (UnauthorizedAccessException) { return false; }

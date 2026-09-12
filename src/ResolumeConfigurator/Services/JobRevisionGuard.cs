@@ -6,6 +6,8 @@ public static class JobRevisionGuard
 {
     public static void Validate(JobIdentity? expected, JobSnapshot actual)
     {
+        if (actual.IntegrationSchemaVersion != 1)
+            throw new InvalidOperationException("Job Configurator integration schema 1 is required before changing Arena or decoders. Update compatible suite applications and reload the job.");
         if (expected is null || actual.Identity is null)
             throw new InvalidOperationException("Update NDI Job Configurator, then reload this job. A stable server/job revision is required before changing Arena.");
         if (expected != actual.Identity)

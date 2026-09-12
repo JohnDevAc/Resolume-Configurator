@@ -75,6 +75,16 @@ if (args.Contains("--configure-n6", StringComparer.OrdinalIgnoreCase))
 
 var tests = new (string Name, Action Test)[]
 {
+    ("QA: complete encoder identity", QaRemediationTests.SourceIdentity),
+    ("QA: local mutation guards", () => QaLifecycleTests.LocalMutationGuardsAsync().GetAwaiter().GetResult()),
+    ("QA: operation ownership and parent lifetime", () => QaLifecycleTests.OperationOwnershipAsync().GetAwaiter().GetResult()),
+    ("QA: destination-local replacement recovery", () => QaLifecycleTests.ReplacementRecoveryAsync().GetAwaiter().GetResult()),
+    ("QA: restart graph identity", () => QaRemediationTests.RestartIdentityAsync().GetAwaiter().GetResult()),
+    ("QA: decoder preset ownership", () => QaP2Tests.PresetOwnershipAsync().GetAwaiter().GetResult()),
+    ("QA: preference concurrency", () => QaP2Tests.PreferenceConcurrencyAsync().GetAwaiter().GetResult()),
+    ("QA: advanced output enablement", QaP2Tests.AdvancedOutputEnabled),
+    ("QA: supported job schema", () => QaP2Tests.SupportedSchemaAsync().GetAwaiter().GetResult()),
+    ("QA: coarse timestamps and stale save rejection", () => QaP2Tests.SaveEvidenceAsync().GetAwaiter().GetResult()),
     ("audit: complete and unique encoder identities", AuditRegressionTests.SourceIdentities),
     ("audit: verified decoder sender identity", AuditRegressionTests.SenderIdentity),
     ("audit: completion cannot cancel validation", () => AuditRegressionTests.CompletionGuardsAsync().GetAwaiter().GetResult()),
@@ -122,6 +132,7 @@ var tests = new (string Name, Action Test)[]
     ("N6 decoder preset slot selection", TestN6PresetSlotSelection)
 };
 
+if (args.Contains("--qa-remediation", StringComparer.Ordinal)) tests = tests.Where(test => test.Name.StartsWith("QA:", StringComparison.Ordinal)).ToArray();
 var failures = new List<string>();
 foreach (var test in tests)
 {
@@ -145,9 +156,9 @@ static void TestSourceMatcher()
     var match = SourceMatcher.BestMatch(device, new[]
     {
         new ArenaSource("OTHER", "Other", "NDI Servers"),
-        new ArenaSource("N6ENCODERTEST-KV-001 (Decoding Channel)", "N6ENCODERTEST-KV-001 (Decoding Channel)", "NDI Servers")
+        new ArenaSource("N6ENCODERTEST-KV-001 (N6EncoderTest-181)", "N6ENCODERTEST-KV-001 (N6EncoderTest-181)", "NDI Servers")
     });
-    Assert(match?.Name.StartsWith("N6ENCODERTEST-KV-001", StringComparison.Ordinal) == true, "hostname prefix match");
+    Assert(match?.Name.StartsWith("N6ENCODERTEST-KV-001", StringComparison.Ordinal) == true, "complete host and channel match");
 }
 
 static void TestSourceUrl()
@@ -297,10 +308,10 @@ static void TestN60PresetSlotSelection()
     {
         new N60PresetSummary(1, "Camera", "Encoder (Camera)", "", false),
         new N60PresetSummary(2, "", "", "", true),
-        new N60PresetSummary(3, "N6EncoderTest-KV-002", "JOHN-PC (N6EncoderTest-KV-002)", "", false),
+        new N60PresetSummary(3, "N6EncoderTest-KV-002", "JOHN-PC (N6EncoderTest-KV-002)", "", false, "ndi://192.0.2.10:5961"),
         new N60PresetSummary(10, "", "", "#000000", false)
     };
-    Assert(KiloviewDecoderPresetService.SelectN60Slot(presets, "N6EncoderTest-KV-002", out var reused) == 3 && reused, "reuse matching N60 slot");
+    Assert(KiloviewDecoderPresetService.SelectN60Slot(presets, "N6EncoderTest-KV-002", out var reused, "192.0.2.10") == 3 && reused, "reuse matching N60 slot");
     Assert(KiloviewDecoderPresetService.SelectN60Slot(presets, "New Arena Output", out reused) == 2 && !reused, "choose first empty N60 slot");
 }
 
@@ -309,9 +320,9 @@ static void TestN6PresetSlotSelection()
     var presets = new[]
     {
         new N6PresetSummary(1, "Camera"),
-        new N6PresetSummary(3, "JOHN-PC (N6EncoderTest-KV-001)")
+        new N6PresetSummary(3, "JOHN-PC (N6EncoderTest-KV-001)", "ndi://192.0.2.10:5961")
     };
-    Assert(KiloviewDecoderPresetService.SelectN6Slot(presets, "N6EncoderTest-KV-001", out var reused) == 3 && reused, "reuse matching N6 slot");
+    Assert(KiloviewDecoderPresetService.SelectN6Slot(presets, "N6EncoderTest-KV-001", out var reused, "192.0.2.10") == 3 && reused, "reuse matching N6 slot");
     Assert(KiloviewDecoderPresetService.SelectN6Slot(presets, "New Arena Output", out reused) == 0 && !reused, "request firmware-managed next empty N6 slot");
     Assert(KiloviewDecoderPresetService.IsSameN6Source("sender-1", "ndi://192.168.0.16:5965", "sender-2", "ndi://192.168.0.16:5965"), "recognize unchanged N6 source URL");
     Assert(!KiloviewDecoderPresetService.IsSameN6Source("sender-1", "ndi://192.168.0.16:5965", "sender-2", "ndi://192.168.0.20:5965"), "recognize changed N6 source URL");

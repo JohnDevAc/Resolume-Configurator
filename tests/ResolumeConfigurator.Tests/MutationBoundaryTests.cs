@@ -17,10 +17,13 @@ internal static class MutationBoundaryTests
             if (clipTransport.Reads != 2 || clipTransport.Writes != 0) throw new Exception("Clip loading crossed a stale mutation boundary.");
         }
         var identity = new JobIdentity(Guid.NewGuid().ToString(), "job", "revision");
-        var job = new JobSnapshot("Job", "fixture", DateTimeOffset.Now, [], identity, "192.0.2.5");
+        var job = new JobSnapshot("Job", "fixture", DateTimeOffset.Now, [], identity, "192.0.2.5", 1);
         using var status = JsonDocument.Parse("""{"endpointId":"pc","ndiConfiguration":{"preferredInterfaceConfigured":true,"sendGroups":["Job"],"receiveGroups":["Job"],"discoveryServer":"192.0.2.5"}}""");
         foreach (var failure in new[] { "job", "ndi", "unavailable", "none", "later" })
         {
+            using var folder = new QaRemediationTests.TempFolder();
+            var path = System.IO.Path.Combine(folder.Path, "Job.avc");
+            QaRemediationTests.SavedGraph(QaRemediationTests.Graph(100)).Save(path);
             var api = new ArenaFixture();
             var waited = false;
             var validations = 0;
@@ -37,7 +40,7 @@ internal static class MutationBoundaryTests
             }
             try
             {
-                await worker.RestoreCompositionAsync("Job", ["Decoder"], new("Job.avc", 1, 1), CancellationToken.None, Guard);
+                await worker.RestoreCompositionAsync("Job", ["Decoder"], new(path, 1, 1), CancellationToken.None, Guard);
                 if (failure != "none") throw new Exception("Unsafe restoration succeeded.");
                 if (api.Writes == 0 || !api.Saved) throw new Exception("Valid restoration did not finish.");
                 if (validations != api.Writes) throw new Exception("Restoration redundantly revalidated outside its mutation boundaries.");
@@ -99,10 +102,7 @@ internal static class MutationBoundaryTests
         public Task<ArenaCompositionState> GetCompositionStateAsync(CancellationToken ct)
         {
             if (++_reads == 1) throw new HttpRequestException("Arena is restarting");
-            var groups = new[] { "Decoder", "LED Wall", "Show" }.Select((name, i) => new ArenaGroupState(i + 1, name,
-                new[] { "Holding", "Secondary", "Primary" }.Select((layer, j) => new ArenaLayerState(i * 3 + j + 1, layer,
-                    [(long)(i * 100 + j * 10 + 1), (long)(i * 100 + j * 10 + 2)])).ToArray())).ToArray();
-            return Task.FromResult(new ArenaCompositionState("Job", groups.SelectMany(g => g.Layers).ToArray(), groups, []));
+            return Task.FromResult(QaRemediationTests.Graph(100));
         }
         private async Task Write() { if (BeforeMutation is not null) await BeforeMutation(CancellationToken.None); Writes++; }
         public Task ConfigureClipFitAsync(long id, CancellationToken ct) => Write();
